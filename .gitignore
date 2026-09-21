@@ -33,3 +33,6 @@ local.properties
 # android
 android/.kotlin/
 android/**/build/
+
+# python virtualenv
+.venv/
