@@ -20,6 +20,8 @@ extern int test_failures;
 #define ASSERT_MEM_EQ(expected, actual, size) \
     do { if (memcmp((expected), (actual), (size)) != 0) FAIL_AT("memory differs over %zu bytes (%s)", (size_t)(size), #actual); } while (0)
 
+#define ASSERT_NOT_NULL(ptr) do { if ((ptr) == NULL) FAIL_AT("unexpected NULL (%s)", #ptr); } while (0)
+
 #define RUN(test) do { fprintf(stderr, "  %s\n", #test); test(); } while (0)
 
 #endif
