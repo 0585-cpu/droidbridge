@@ -51,7 +51,7 @@
 - Consumes: 승인된 설계 명세와 roadmap의 global constraints.
 - Produces: `make configure-core`, `make test-core`, `make verify-foundation`; CTest executable `droidbridge_core_tests`.
 
-- [ ] **Step 1: Write the failing environment test**
+- [x] **Step 1: Write the failing environment test**
 
 Create `tools/check_environment.py`:
 
@@ -108,7 +108,7 @@ int main(void) {
 }
 ```
 
-- [ ] **Step 2: Run the checks and confirm the expected failure**
+- [x] **Step 2: Run the checks and confirm the expected failure**
 
 Run:
 
@@ -120,7 +120,7 @@ cmake --build build/core
 
 Expected: environment check prints `environment: ok`; link fails with `undefined symbol: dbp_codec_self_test`.
 
-- [ ] **Step 3: Add the minimal build skeleton and project metadata**
+- [x] **Step 3: Add the minimal build skeleton and project metadata**
 
 `core/CMakeLists.txt`:
 
@@ -170,7 +170,7 @@ verify-foundation: test-core
 
 Add a BSD-3-Clause `LICENSE`, a security contact process in `SECURITY.md`, build output/IDE/secret exclusions in `.gitignore`, and LF/UTF-8/C-Swift-Kotlin indentation rules in `.editorconfig`.
 
-- [ ] **Step 4: Run the build and verify it passes**
+- [x] **Step 4: Run the build and verify it passes**
 
 Run:
 
@@ -180,7 +180,7 @@ make test-core
 
 Expected: one CTest named `droidbridge_core_tests` passes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .gitignore .editorconfig LICENSE SECURITY.md README.md Makefile core tools/check_environment.py
@@ -199,7 +199,7 @@ git commit -m "build: establish droidbridge foundation"
 - Consumes: DBP/1 fields and error codes from the approved spec.
 - Produces: canonical JSON fixture schema `dbp-vectors-v1`; helper functions `encode_header(fields, hmac_bytes)` and `compute_hmac(secret, header, payload)` used only by the generator/probe.
 
-- [ ] **Step 1: Write the failing generator test**
+- [x] **Step 1: Write the failing generator test**
 
 Create `tools/tests/test_protocol_vectors.py`:
 
@@ -235,7 +235,7 @@ def test_fixture_is_reproducible() -> None:
     }
 ```
 
-- [ ] **Step 2: Run the test and confirm it fails**
+- [x] **Step 2: Run the test and confirm it fails**
 
 Run:
 
@@ -245,7 +245,7 @@ python3 -m unittest discover -s tools/tests -p 'test_*.py' -v
 
 Expected: failure because `generate_protocol_vectors.py` and fixture do not exist.
 
-- [ ] **Step 3: Implement the canonical encoder and fixture generator**
+- [x] **Step 3: Implement the canonical encoder and fixture generator**
 
 Use this wire encoder in `tools/generate_protocol_vectors.py`:
 
@@ -288,7 +288,7 @@ The generator writes sorted, indented JSON with hex fields and supports `--check
 
 Document the complete 64-byte header, message types, payloads, HMAC input, state transition to raw stream, limits, and error codes in `protocol/dbp-v1.md`.
 
-- [ ] **Step 4: Run the generator and tests**
+- [x] **Step 4: Run the generator and tests**
 
 Run:
 
@@ -300,7 +300,7 @@ python3 tools/generate_protocol_vectors.py --check
 
 Expected: all tests pass and a second generation creates no diff.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add protocol tools/generate_protocol_vectors.py tools/tests
@@ -322,7 +322,7 @@ git commit -m "docs: define canonical dbp1 wire protocol"
 - Consumes: `protocol/test-vectors/dbp-v1.json` semantics.
 - Produces: `dbp_encode_header`, `dbp_decode_header`, `dbp_encode_open_tcp`, `dbp_decode_open_tcp`, enum `dbp_status_t`.
 
-- [ ] **Step 1: Write failing codec tests**
+- [x] **Step 1: Write failing codec tests**
 
 Define the public types first in the test so signatures are fixed:
 
@@ -357,7 +357,7 @@ static void test_truncated_and_bad_magic_are_rejected(void) {
 
 Add OPEN_TCP tests for IPv4 `93.184.216.34:443`, domain `example.com:443`, zero port, domain length 0, domain length 254, unknown address type, non-zero flags, and every unknown message type value.
 
-- [ ] **Step 2: Build and confirm failure**
+- [x] **Step 2: Build and confirm failure**
 
 Run:
 
@@ -367,7 +367,7 @@ make test-core
 
 Expected: compilation fails because protocol symbols are undefined.
 
-- [ ] **Step 3: Implement strict codec functions**
+- [x] **Step 3: Implement strict codec functions**
 
 `droidbridge_protocol.h` must define:
 
@@ -395,7 +395,7 @@ Implement explicit big-endian `read_u16/read_u64/write_u16/write_u64` helpers wi
 
 For `dbp_open_tcp_t`, store either four IPv4 bytes or a 253-byte domain plus length. Encoding and decoding must never append or require a NUL byte on the wire.
 
-- [ ] **Step 4: Run unit tests with sanitizers**
+- [x] **Step 4: Run unit tests with sanitizers**
 
 Run:
 
@@ -408,7 +408,7 @@ ctest --test-dir build/core-asan --output-on-failure
 
 Expected: codec tests pass with no ASan/UBSan reports.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add core
@@ -430,7 +430,7 @@ git commit -m "feat(core): add strict dbp1 codec"
 - Consumes: blocked CIDRs from spec section 10.
 - Produces: `db_policy_check_ipv4(const uint8_t address[4]) -> db_policy_result_t`; generated allowed/denied boundary fixture.
 
-- [ ] **Step 1: Write failing CIDR boundary tests**
+- [x] **Step 1: Write failing CIDR boundary tests**
 
 Use table-driven tests:
 
@@ -457,19 +457,19 @@ static const policy_case_t cases[] = {
 
 Cover first, last, one-before, and one-after addresses for every CIDR listed in the spec.
 
-- [ ] **Step 2: Run and confirm failure**
+- [x] **Step 2: Run and confirm failure**
 
 Run `make test-core`.
 
 Expected: missing `droidbridge_policy.h` or undefined function failure.
 
-- [ ] **Step 3: Implement policy using integer masks**
+- [x] **Step 3: Implement policy using integer masks**
 
 Convert bytes to a host `uint32_t` with explicit shifts and compare using `(address & mask) == network`. Return a specific denial reason enum; do not use string parsing in the runtime path.
 
 Extend the Python generator to write `destination-policy.json` from a single `BLOCKED_CIDRS` table and assert the C table matches the document during review. The committed fixture must include each boundary case and `93.184.216.34` as an allowed public address.
 
-- [ ] **Step 4: Run all policy tests**
+- [x] **Step 4: Run all policy tests**
 
 Run:
 
@@ -480,7 +480,7 @@ python3 tools/generate_protocol_vectors.py --check
 
 Expected: all boundary tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add core protocol/test-vectors tools/generate_protocol_vectors.py
@@ -498,7 +498,7 @@ git commit -m "feat(core): enforce public ipv4 destination policy"
 - Consumes: DBP fixture encoder and a 32-byte hex Pairing Secret supplied through environment variable `DROIDBRIDGE_TEST_SECRET`.
 - Produces: commands `health`, `open`, `dns`; `MockRelay` for Android/macOS tests. The probe refuses to print the secret or application payload.
 
-- [ ] **Step 1: Write failing mock-relay integration tests**
+- [x] **Step 1: Write failing mock-relay integration tests**
 
 ```python
 class ProbeIntegrationTest(unittest.IsolatedAsyncioTestCase):
@@ -520,7 +520,7 @@ class ProbeIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
 Also test timestamp skew of 121 seconds, repeated nonce, truncated header, and payload length over 4096.
 
-- [ ] **Step 2: Run and confirm failure**
+- [x] **Step 2: Run and confirm failure**
 
 Run:
 
@@ -530,7 +530,7 @@ python3 -m unittest discover -s tools/tests -p 'test_*.py' -v
 
 Expected: imports fail because probe and mock relay do not exist.
 
-- [ ] **Step 3: Implement standard-library-only async probe**
+- [x] **Step 3: Implement standard-library-only async probe**
 
 Implement `asyncio.open_connection`, exact 64-byte reads with `readexactly`, constant-time `hmac.compare_digest`, and a bounded replay cache in the mock. CLI examples must work as written:
 
@@ -542,7 +542,7 @@ DROIDBRIDGE_TEST_SECRET=<64-hex> python3 tools/dbp_probe.py dns --host 127.0.0.1
 
 The `open` command completes HELLO and OPEN handshakes, prints only status/destination/latency, then closes without sending HTTP data. The `dns` command builds and parses a minimal DNS packet without external packages.
 
-- [ ] **Step 4: Run tests and a local smoke test**
+- [x] **Step 4: Run tests and a local smoke test**
 
 Run:
 
@@ -558,7 +558,7 @@ kill "$relay_pid"
 
 Expected: CLI prints `status=ok protocol=DBP/1` and never prints the secret.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tools
@@ -579,7 +579,7 @@ git commit -m "test: add dbp probe and mock relay"
 - Consumes: codec/policy public APIs.
 - Produces: `make fuzz-smoke`, CI job `foundation`, developer setup instructions.
 
-- [ ] **Step 1: Add fuzz smoke tests that initially fail to build**
+- [x] **Step 1: Add fuzz smoke tests that initially fail to build**
 
 `fuzz_dbp_header.c`:
 
@@ -598,7 +598,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
 Create an equivalent OPEN_TCP target that calls `dbp_decode_open_tcp` for every input.
 
-- [ ] **Step 2: Confirm unsupported fuzz target configuration fails cleanly**
+- [x] **Step 2: Confirm unsupported fuzz target configuration fails cleanly**
 
 Run:
 
@@ -609,7 +609,7 @@ cmake --build build/core-fuzz
 
 Expected: failure until fuzz targets and sanitizer flags are defined.
 
-- [ ] **Step 3: Add opt-in libFuzzer targets and CI**
+- [x] **Step 3: Add opt-in libFuzzer targets and CI**
 
 When `DROIDBRIDGE_BUILD_FUZZERS=ON`, compile fuzz targets with:
 
@@ -619,7 +619,7 @@ When `DROIDBRIDGE_BUILD_FUZZERS=ON`, compile fuzz targets with:
 
 Add `make fuzz-smoke` to run each target for 10 seconds with `-max_len=4096 -timeout=2`. The GitHub Actions workflow runs on `macos-15` and `ubuntu-24.04`, executes Python tests, ASan/UBSan C tests, fixture check, and the 10-second fuzz smoke run. It must not inject any secret other than the documented all-zero test fixture secret.
 
-- [ ] **Step 4: Run the complete foundation gate**
+- [x] **Step 4: Run the complete foundation gate**
 
 Run:
 
@@ -630,7 +630,7 @@ make fuzz-smoke
 
 Expected: all C/Python tests pass and both fuzz targets exit without crash.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add core/fuzz core/CMakeLists.txt Makefile README.md .github/workflows/foundation.yml
