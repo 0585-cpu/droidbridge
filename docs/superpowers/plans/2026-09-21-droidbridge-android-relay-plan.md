@@ -51,7 +51,7 @@
 - Consumes: Gradle/JDK/API floors from the approved spec.
 - Produces: `RelayState`, `RelayStatus`, `CellularStatus`, build commands `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`.
 
-- [ ] **Step 1: Write the failing state transition test**
+- [x] **Step 1: Write the failing state transition test**
 
 ```kotlin
 class RelayStateTest {
@@ -78,7 +78,7 @@ class RelayStateTest {
 
 Also test Start from STOPPED, stop from every state, flow count never below zero, and counters use saturating non-negative values.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run:
 
@@ -89,7 +89,7 @@ cd android
 
 Expected: build or compilation fails because project/state types do not exist.
 
-- [ ] **Step 3: Create the pinned build and minimal immutable state model**
+- [x] **Step 3: Create the pinned build and minimal immutable state model**
 
 Use these exact version pins in `libs.versions.toml`:
 
@@ -128,7 +128,7 @@ data class RelayState(
 
 Keep transition methods pure so tests do not need Android framework classes.
 
-- [ ] **Step 4: Run unit build and lint**
+- [x] **Step 4: Run unit build and lint**
 
 ```bash
 cd android
@@ -137,7 +137,7 @@ cd android
 
 Expected: all tasks pass and `app-debug.apk` is produced.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add android
@@ -159,7 +159,7 @@ git commit -m "build(android): scaffold relay application"
 - Consumes: `protocol/test-vectors/dbp-v1.json` copied byte-for-byte into test resources.
 - Produces: `DbpCodec.readHeader`, `DbpCodec.writeHeader`, `DbpCodec.readOpenTcp`, `SessionAuthenticator.acceptHello`, `AuthenticatedSession.verifyFollowup`.
 
-- [ ] **Step 1: Write fixture and replay tests**
+- [x] **Step 1: Write fixture and replay tests**
 
 ```kotlin
 @Test
@@ -185,7 +185,7 @@ fun `nonce may continue in the authenticated connection but not in a new connect
 
 Add tests for 120 seconds accepted, 121 rejected, wrong HMAC, unknown type, non-zero flags, bad header length, HELLO with non-empty payload, constant-time comparison path, replay cache eviction at 1024, and body over 4096 bytes.
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 ```bash
 cd android
@@ -194,7 +194,7 @@ cd android
 
 Expected: undefined codec/authenticator symbols.
 
-- [ ] **Step 3: Implement strict wire handling and connection-scoped auth**
+- [x] **Step 3: Implement strict wire handling and connection-scoped auth**
 
 Use `ByteBuffer.order(ByteOrder.BIG_ENDIAN)` on a private copied 64-byte header; never call `readBytes()` with a length obtained from the peer before checking the 4096-byte control payload ceiling.
 
@@ -224,7 +224,7 @@ class SessionAuthenticator(
 
 Use `MessageDigest.isEqual()` for HMAC comparison and `Mac.getInstance("HmacSHA256")` for signing.
 
-- [ ] **Step 4: Run tests and fixture drift check**
+- [x] **Step 4: Run tests and fixture drift check**
 
 ```bash
 cp protocol/test-vectors/dbp-v1.json android/app/src/test/resources/dbp-v1.json
@@ -235,7 +235,7 @@ cmp ../protocol/test-vectors/dbp-v1.json app/src/test/resources/dbp-v1.json
 
 Expected: tests pass and `cmp` emits no output.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add android/app/src/main/java/io/droidbridge/protocol android/app/src/main/java/io/droidbridge/security android/app/src/test
@@ -254,7 +254,7 @@ git commit -m "feat(android): authenticate dbp1 sessions"
 - Consumes: `protocol/test-vectors/destination-policy.json`.
 - Produces: `DestinationPolicy.evaluate(InetAddress)`, `DestinationPolicy.filterResolved(domain, addresses)`.
 
-- [ ] **Step 1: Write failing policy and mixed-answer tests**
+- [x] **Step 1: Write failing policy and mixed-answer tests**
 
 ```kotlin
 @Test
@@ -278,20 +278,20 @@ fun `all blocked DNS answers fail closed`() {
 
 Load every boundary fixture and compare its expected result.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```bash
 cd android
 ./gradlew testDebugUnitTest --tests io.droidbridge.policy.DestinationPolicyTest
 ```
 
-- [ ] **Step 3: Implement integer-mask IPv4 policy**
+- [x] **Step 3: Implement integer-mask IPv4 policy**
 
 Reject non-IPv4 addresses in B1 with `UNSUPPORTED_ADDRESS_FAMILY`. Convert `Inet4Address.address` to an unsigned `Long` and use a static ordered CIDR list matching the C implementation. `filterResolved` must remove denied addresses, preserve the resolver order of allowed addresses, and throw when none remain.
 
 At socket connection time call `evaluate()` again on the exact `InetAddress` passed to `Socket.connect()`; do not trust only the original DNS list.
 
-- [ ] **Step 4: Run fixture parity checks**
+- [x] **Step 4: Run fixture parity checks**
 
 ```bash
 cp protocol/test-vectors/destination-policy.json android/app/src/test/resources/destination-policy.json
@@ -300,7 +300,7 @@ cd android
 cmp ../protocol/test-vectors/destination-policy.json app/src/test/resources/destination-policy.json
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add android/app/src/main/java/io/droidbridge/policy android/app/src/main/java/io/droidbridge/network/ResolvedDestination.kt android/app/src/test
@@ -322,7 +322,7 @@ git commit -m "feat(android): block private and reserved relay destinations"
 - Consumes: none from runtime DBP beyond the 256-bit resulting secret.
 - Produces: pairing port 27184; `PairingCoordinator.openWindow(duration = 60.seconds)`; `StateFlow<PairingUiState>`; exactly one `PairedPeer`.
 
-- [ ] **Step 1: Write deterministic key agreement and expiry tests**
+- [x] **Step 1: Write deterministic key agreement and expiry tests**
 
 ```kotlin
 @Test
@@ -350,14 +350,14 @@ fun `pairing window expires without persisting secret`() = runTest {
 
 Also test one-sided approval, transcript tampering, invalid public key, frame above 8192 bytes, and new peer atomically replacing the old peer.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```bash
 cd android
 ./gradlew testDebugUnitTest --tests 'io.droidbridge.pairing.*' --tests 'io.droidbridge.security.PairingSecretStoreTest'
 ```
 
-- [ ] **Step 3: Implement the exact pairing protocol**
+- [x] **Step 3: Implement the exact pairing protocol**
 
 Use a 4-byte big-endian JSON frame length capped at 8192 bytes. The hello object contains:
 
@@ -381,7 +381,7 @@ HMAC(secret, role || 0x00 || SHA-256(transcript))
 
 Persist only after both proofs validate and Android user approved. `PairingServer` binds loopback port 27184 and closes after one completed attempt or 60 seconds.
 
-- [ ] **Step 4: Protect the secret at rest**
+- [x] **Step 4: Protect the secret at rest**
 
 `AndroidPairingSecretStore` generates an AES-256-GCM key named `io.droidbridge.pairing.storage.v1` in `AndroidKeyStore`, encrypts a compact peer record into private `SharedPreferences`, uses random 12-byte IV and peer id as AAD, and overwrites the previous encrypted blob in one `edit(commit = true)` transaction. Never expose a method that returns the secret as String.
 
@@ -394,7 +394,7 @@ cd android
 
 Expected: pairing and storage tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add android/app/src/main/java/io/droidbridge/pairing android/app/src/main/java/io/droidbridge/security android/app/src/test
@@ -414,7 +414,7 @@ git commit -m "feat(android): pair one mac with ecdh and keystore storage"
 - Consumes: `DestinationPolicy`.
 - Produces: `StateFlow<CellularState>`; `suspend fun connectTcp(destination): Socket`; `fun currentNetwork(): Network?`; `fun currentDnsServers(): List<InetAddress>`.
 
-- [ ] **Step 1: Write race and no-fallback tests around a framework adapter**
+- [x] **Step 1: Write race and no-fallback tests around a framework adapter**
 
 Define an injectable interface:
 
@@ -429,14 +429,14 @@ interface ConnectivityFacade {
 
 Test that `connectTcp()` throws `CellularUnavailableException` before `onAvailable`, after `onLost`, and during replacement; verify the fake default/Wi-Fi socket factory is never invoked.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```bash
 cd android
 ./gradlew testDebugUnitTest --tests io.droidbridge.network.CellularNetworkControllerTest
 ```
 
-- [ ] **Step 3: Implement lifecycle and socket binding**
+- [x] **Step 3: Implement lifecycle and socket binding**
 
 Build this request exactly:
 
@@ -451,7 +451,7 @@ Store a generation number with each available `Network`. `connectTcp()` snapshot
 
 On `onLost` atomically clear the network, publish `CellularState.Lost`, and call registered flow-cancellation listeners.
 
-- [ ] **Step 4: Add a real-device binding assertion**
+- [x] **Step 4: Add a real-device binding assertion**
 
 The instrumentation test starts only when a cellular `Network` exists, opens a TCP socket through `AndroidCellularTransport`, then asserts `ConnectivityManager.getNetworkCapabilities(network)` contains `TRANSPORT_CELLULAR`. It must not assert a public service response or consume large traffic.
 
@@ -465,7 +465,7 @@ cd android
 
 Expected: unit tests always pass; instrumentation passes on a connected device with active mobile data or is explicitly skipped with `Assume.assumeTrue` when no cellular network exists.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add android/app/src/main/java/io/droidbridge/network android/app/src/test android/app/src/androidTest
@@ -483,7 +483,7 @@ git commit -m "feat(android): bind outbound sockets to cellular network"
 - Consumes: selected cellular network and its `LinkProperties.dnsServers`.
 - Produces: `suspend fun query(packet: ByteArray): ByteArray`; total deadline 5 seconds, per-server UDP deadline 2 seconds, TCP fallback on TC bit.
 
-- [ ] **Step 1: Write failing fallback and validation tests**
+- [x] **Step 1: Write failing fallback and validation tests**
 
 ```kotlin
 @Test
@@ -500,20 +500,20 @@ fun `truncated UDP response retries same server over TCP`() = runTest {
 
 Also test mismatched transaction ID, malformed packet under 12 bytes, response over 4096 bytes, first server timeout then second success, and total 5-second deadline.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```bash
 cd android
 ./gradlew testDebugUnitTest --tests io.droidbridge.network.CellularDnsForwarderTest
 ```
 
-- [ ] **Step 3: Implement network-bound DNS transport**
+- [x] **Step 3: Implement network-bound DNS transport**
 
 For UDP, create `DatagramSocket(null)`, call `network.bindSocket(socket)`, connect to server port 53, send at most 4096 bytes, and verify transaction id plus QR bit. For TCP, create through `network.socketFactory`, connect to port 53, prefix query with two-byte length, and use `readFully` with maximum 4096 bytes.
 
 Do not cache names and do not log query bytes. Return `DnsFailure` with one of `MALFORMED`, `NO_SERVERS`, `TIMEOUT`, `ID_MISMATCH`, `IO_ERROR`.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 ```bash
 cd android
@@ -522,7 +522,7 @@ cd android
 
 Expected: all DNS tests pass under virtual time.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add android/app/src/main/java/io/droidbridge/network android/app/src/test/java/io/droidbridge/network
@@ -543,7 +543,7 @@ git commit -m "feat(android): forward dns over selected cellular network"
 - Consumes: authenticator, single peer store, destination policy, cellular TCP connector, DNS forwarder.
 - Produces: DBP runtime port 27183, `StateFlow<RelayMetricsSnapshot>`, and the canonical `HEALTH_RESPONSE` payload defined in `protocol/dbp-v1.md`.
 
-- [ ] **Step 1: Write failing end-to-end loopback tests using fake cellular sockets**
+- [x] **Step 1: Write failing end-to-end loopback tests using fake cellular sockets**
 
 Test these exact paths:
 
@@ -569,14 +569,14 @@ fun `OPEN_TCP bridges bytes and applies half close`() = runTest {
 
 Add wrong secret, private IP, session 129, auth timeout, idle timeout, cellular loss while active, DNS query, health, malformed OPEN, and server bind address assertion equal to loopback.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```bash
 cd android
 ./gradlew testDebugUnitTest --tests 'io.droidbridge.relay.*'
 ```
 
-- [ ] **Step 3: Implement bounded server and session state machine**
+- [x] **Step 3: Implement bounded server and session state machine**
 
 `RelayServer.start()` must bind using:
 
@@ -595,7 +595,7 @@ After `OPEN_OK`, call `StreamBridge.copyBidirectional` with two 64 KiB buffers. 
 
 Metrics use atomic counters and never expose destination hostnames or payload.
 
-- [ ] **Step 4: Run server tests under repetition**
+- [x] **Step 4: Run server tests under repetition**
 
 ```bash
 cd android
@@ -604,7 +604,7 @@ for i in 1 2 3 4 5; do ./gradlew testDebugUnitTest --tests 'io.droidbridge.relay
 
 Expected: five consecutive passes with no leaked coroutine warning.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add android/app/src/main/java/io/droidbridge/relay android/app/src/test/java/io/droidbridge/relay
@@ -628,7 +628,7 @@ git commit -m "feat(android): serve authenticated cellular tcp relay"
 - Consumes: pairing coordinator, relay server, network state and metrics.
 - Produces: explicit Start/Stop/Pair New Mac/Forget Mac actions; foreground notification; human-readable safe error states.
 
-- [ ] **Step 1: Write failing ViewModel action tests**
+- [x] **Step 1: Write failing ViewModel action tests**
 
 ```kotlin
 @Test
@@ -647,14 +647,14 @@ fun `forget mac stops relay before deleting secret`() = runTest {
 }
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```bash
 cd android
 ./gradlew testDebugUnitTest --tests io.droidbridge.ui.RelayViewModelTest
 ```
 
-- [ ] **Step 3: Implement service and manifest contract**
+- [x] **Step 3: Implement service and manifest contract**
 
 Declare only these relevant permissions:
 
@@ -680,7 +680,7 @@ On Start action, call `startForeground()` before cellular request/server startup
 
 The Compose screen displays all spec fields, six-digit SAS only during a live pairing window, and explicit approval/reject buttons. It never displays or copies the Pairing Secret.
 
-- [ ] **Step 4: Run unit, instrumentation, lint, and APK build**
+- [x] **Step 4: Run unit, instrumentation, lint, and APK build**
 
 ```bash
 cd android
@@ -690,7 +690,7 @@ cd android
 
 Expected: service enters foreground, binds only loopback, and stops cleanly.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add android/app/src/main android/app/src/test android/app/src/androidTest
@@ -712,7 +712,7 @@ git commit -m "feat(android): add explicit foreground relay controls"
 - Consumes: pairing port 27184, relay port 27183, Android debug APK, DBP probe.
 - Produces: a repeatable manual+automated smoke procedure proving ADB loopback reachability and cellular-bound relay readiness before macOS code exists.
 
-- [ ] **Step 1: Write a pairing-probe test against an in-process fake Android endpoint**
+- [x] **Step 1: Write a pairing-probe test against an in-process fake Android endpoint**
 
 The test must prove P-256/HKDF/SAS parity, both confirmation proofs, 60-second expiry, and that the resulting secret is held in a `bytearray` which is overwritten on exit.
 
@@ -724,7 +724,7 @@ python3 -m unittest tools.tests.test_pairing_probe -v
 
 Expected: failure before `pairing_probe.py` exists.
 
-- [ ] **Step 2: Implement the probe and scripts**
+- [x] **Step 2: Implement the probe and scripts**
 
 `tools/requirements-dev.txt` contains exactly `cryptography==46.0.1`. `pairing_probe.py` imports it explicitly and exits with installation guidance rather than silently changing protocol behavior when the package is missing. The script prints its SAS, waits for the operator to confirm it matches the Android screen, and writes the secret only to a mode-0600 temporary file created with `tempfile.mkstemp`; `smoke-android-relay.sh` overwrites that file before deleting it in an `EXIT INT TERM` trap.
 
@@ -737,7 +737,7 @@ adb forward tcp:27183 tcp:27183
 
 It pairs, asks the user to press Start on Android, runs DBP health, performs a DBP `OPEN_TCP` handshake to `example.com:443` without application data, then removes both forwards.
 
-- [ ] **Step 3: Run all automated tests before using a device**
+- [x] **Step 3: Run all automated tests before using a device**
 
 ```bash
 python3 -m venv .venv
@@ -749,7 +749,7 @@ cd ..
 python -m unittest discover -s tools/tests -p 'test_*.py' -v
 ```
 
-- [ ] **Step 4: Run the real-device smoke procedure**
+- [x] **Step 4: Run the real-device smoke procedure**
 
 ```bash
 ./scripts/install-android-debug.sh
@@ -767,7 +767,7 @@ OPEN_TCP example.com:443: OPEN_OK
 
 With Android Wi-Fi enabled, inspect the app state and `dumpsys connectivity` to confirm the selected relay network has `TRANSPORT_CELLULAR`. This test does not claim that exact CGNAT addresses match.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tools scripts docs/android-debug-smoke.md Makefile
