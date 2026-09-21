@@ -10,6 +10,7 @@ Status: **B1 in development** (IPv4 TCP + DNS). See
 ## Layout
 
 ```text
+macos/      HostApp (SwiftUI menu bar) + Shared Swift package + Packet Tunnel
 core/       C17 DBP/1 codec, destination policy, packet engine (later: lwIP)
 protocol/   DBP/1 wire spec and canonical test vectors (Python generator)
 tools/      check_environment, vector generator, dbp_probe, mock_relay
@@ -30,6 +31,7 @@ docs/       specs, plans, threat model, operations
 make test-core          # configure + build + ctest
 make verify-foundation  # + environment check, protocol vector check, Python tests
 make fuzz-smoke         # 10s libFuzzer run per parser target (needs `brew install llvm` on macOS)
+make check-macos        # assert-based checks for the macOS Shared package (no Xcode needed)
 ```
 
 Regenerate fixtures after editing `tools/generate_protocol_vectors.py` (the

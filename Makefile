@@ -29,3 +29,10 @@ test-android:
 
 smoke-android:
 	./scripts/smoke-android-relay.sh
+
+.PHONY: check-macos smoke-macos-control
+check-macos:
+	swift run --package-path macos/Shared Checks
+
+smoke-macos-control:
+	./scripts/run-macos-control-smoke.sh --preflight
