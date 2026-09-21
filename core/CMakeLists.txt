@@ -11,6 +11,22 @@ if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()
 
+# --- lwIP NO_SYS data-plane library ---
+option(DROIDBRIDGE_BUILD_LWIP "Build the lwIP data-plane adapter (requires the submodule)" ON)
+if(DROIDBRIDGE_BUILD_LWIP AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lwip/src/Filelists.cmake)
+  set(LWIP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lwip)
+  set(LWIP_INCLUDE_DIRS
+      ${CMAKE_CURRENT_SOURCE_DIR}/ports
+      ${LWIP_DIR}/src/include)
+  include(${LWIP_DIR}/src/Filelists.cmake)
+  add_library(droidbridge_lwip STATIC
+      ${lwipcore_SRCS} ${lwipcore4_SRCS} ${lwipnetif_SRCS}
+      ports/lwip_port.c src/lwip_adapter.c)
+  target_include_directories(droidbridge_lwip PUBLIC ${LWIP_INCLUDE_DIRS} include)
+  # lwIP 2.2 has minor sign-conversion/unused warnings; keep our own code warned but not lwIP.
+  target_compile_options(droidbridge_lwip PRIVATE -Wno-everything)
+endif()
+
 option(DROIDBRIDGE_BUILD_FUZZERS "Build libFuzzer targets (requires an LLVM clang with libFuzzer)" OFF)
 if(DROIDBRIDGE_BUILD_FUZZERS)
   set(fuzz_flags -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)

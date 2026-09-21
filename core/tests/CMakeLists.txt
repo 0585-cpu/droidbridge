@@ -1,3 +1,3 @@
-add_executable(droidbridge_core_tests test_main.c test_dbp_codec.c test_destination_policy.c test_ipv4_tcp.c test_tcp_rewrite.c packet_builder.c)
-target_link_libraries(droidbridge_core_tests PRIVATE droidbridge_protocol)
+add_executable(droidbridge_core_tests test_main.c test_dbp_codec.c test_destination_policy.c test_ipv4_tcp.c test_tcp_rewrite.c test_lwip_adapter.c packet_builder.c)
+target_link_libraries(droidbridge_core_tests PRIVATE droidbridge_protocol droidbridge_lwip)
 add_test(NAME droidbridge_core_tests COMMAND droidbridge_core_tests)
