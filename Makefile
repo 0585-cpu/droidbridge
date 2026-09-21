@@ -46,3 +46,13 @@ benchmark-core:
 
 verify-data-plane:
 	./scripts/verify-data-plane.sh
+
+.PHONY: b1-preflight build-signed-macos build-android-release
+b1-preflight:
+	./scripts/b1-preflight.sh
+
+build-signed-macos:
+	./scripts/build-signed-macos.sh
+
+build-android-release:
+	./scripts/build-android-release.sh
