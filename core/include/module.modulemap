@@ -1,0 +1,4 @@
+module DroidBridgeCore {
+    header "droidbridge_core.h"
+    export *
+}

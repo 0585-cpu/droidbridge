@@ -7,6 +7,27 @@ packages:
   DroidBridgeShared:
     path: macos/Shared
 targets:
+  DroidBridgeCore:
+    type: library.static
+    platform: macOS
+    sources:
+      - path: core/src
+      - path: core/ports/lwip_port.c
+      - path: core/third_party/lwip/src/core
+        excludes: ["ipv6/**"]
+      - path: core/third_party/lwip/src/netif/ethernet.c
+      - path: core/include/module.modulemap
+    settings:
+      base:
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)/core/include
+          - $(SRCROOT)/core/ports
+          - $(SRCROOT)/core/third_party/lwip/src/include
+        MODULEMAP_FILE: core/include/module.modulemap
+        DEFINES_MODULE: NO
+        OTHER_CFLAGS: [-Wno-everything]
+        GCC_WARN_INHIBIT_ALL_WARNINGS: YES
+        SWIFT_VERSION: "6.0"
   DroidBridgeHost:
     type: application
     platform: macOS
@@ -30,6 +51,7 @@ targets:
     sources: [macos/PacketTunnel]
     dependencies:
       - package: DroidBridgeShared
+      - target: DroidBridgeCore
       - sdk: NetworkExtension.framework
     info:
       path: macos/PacketTunnel/Resources/Info.plist
@@ -42,3 +64,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: io.droidbridge.macos.PacketTunnel
         CODE_SIGN_ENTITLEMENTS: macos/PacketTunnel/Resources/PacketTunnel.entitlements
         SWIFT_VERSION: "6.0"
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)/core/include
+        SWIFT_INCLUDE_PATHS:
+          - $(SRCROOT)/core/include
+        OTHER_SWIFT_FLAGS: [-Xcc, -fmodule-map-file=$(SRCROOT)/core/include/module.modulemap]

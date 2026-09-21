@@ -24,15 +24,33 @@ public actor RelayFlowConnection {
 
     private let clientNonce: UInt64
     private var serverNonce: UInt64 = 0
-    private var outbound = Data()
+    private let outbound: OutboundBuffer
     private var sending = false
     private var opened = false
     private let now: @Sendable () -> UInt64
+
+    /// Lock-protected bounded FIFO so the C engine's send callback can enqueue synchronously.
+    final class OutboundBuffer: @unchecked Sendable {
+        private let lock = NSLock()
+        private var data = Data()
+        private let limit: Int
+        init(limit: Int) { self.limit = limit }
+        func append(_ chunk: Data) -> Bool {
+            lock.withLock {
+                guard data.count + chunk.count <= limit else { return false }
+                data.append(chunk); return true
+            }
+        }
+        func takeAll() -> Data { lock.withLock { let d = data; data = Data(); return d } }
+        var count: Int { lock.withLock { data.count } }
+        var isEmpty: Bool { lock.withLock { data.isEmpty } }
+    }
 
     public init(flowId: UInt32, destination: OpenDestination, secret: Data,
                 transport: any RelayTransport, delegate: any RelayFlowDelegate,
                 clientNonce: UInt64 = UInt64.random(in: 1 ... .max),
                 now: @escaping @Sendable () -> UInt64 = { UInt64(Date().timeIntervalSince1970) }) {
+        self.outbound = OutboundBuffer(limit: Self.outboundLimit)
         self.flowId = flowId
         self.destination = destination
         self.secret = secret
@@ -42,7 +60,7 @@ public actor RelayFlowConnection {
         self.now = now
     }
 
-    public var bufferedOutboundBytes: Int { outbound.count }
+    public nonisolated var bufferedOutboundBytes: Int { outbound.count }
 
     public func start() async throws {
         try await transport.start()
@@ -61,6 +79,7 @@ public actor RelayFlowConnection {
         case .openOk:
             opened = true
             delegate?.relayFlowOpened(flowId)
+            pumpSend()
             Task { await self.receiveLoop() }
         case .openError:
             let code = DbpErrorCode(rawValue: openPayload.first ?? 9) ?? .internalError
@@ -71,12 +90,11 @@ public actor RelayFlowConnection {
         }
     }
 
-    /// Called by the engine with Mac->relay bytes. Returns false when the bounded queue is full.
-    public func enqueueFromCore(_ data: Data) -> Bool {
-        guard outbound.count + data.count <= Self.outboundLimit else { return false }
-        outbound.append(data)
-        if opened { pumpSend() }
-        return true
+    /// Called (synchronously) by the engine with Mac->relay bytes. Returns false when the queue is full.
+    public nonisolated func enqueueFromCore(_ data: Data) -> Bool {
+        let accepted = outbound.append(data)
+        if accepted { Task { await self.pumpSend() } }
+        return accepted
     }
 
     public func close() async { await transport.cancel() }
@@ -103,10 +121,9 @@ public actor RelayFlowConnection {
     }
 
     private func pumpSend() {
-        guard !sending, !outbound.isEmpty else { return }
+        guard opened, !sending, !outbound.isEmpty else { return }
         sending = true
-        let chunk = outbound
-        outbound = Data()
+        let chunk = outbound.takeAll()
         Task {
             do {
                 try await transport.send(chunk)
