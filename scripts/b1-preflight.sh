@@ -12,6 +12,10 @@ fail=0
 # check NAME  CMD... -> records pass/fail from exit status, no stdout captured
 record() { local name="$1" ok="$2" detail="${3:-}"; checks+=("$name|$ok|$detail"); [ "$ok" = "true" ] || fail=1; }
 yn() { [ "$1" -eq 0 ] && echo true || echo false; }
+# has HAYSTACK PATTERN: grep a captured string. Never pipe a large producer into
+# `grep -q` under `pipefail`: grep quits on first match, SIGPIPEs the producer,
+# and the pipeline then reports 141, not grep's success.
+has() { grep -qE "$2" <<<"$1"; }
 
 # 1. arm64
 [ "$(uname -m)" = "arm64" ]; record arch_arm64 "$(yn $?)"
@@ -31,7 +35,7 @@ awk "BEGIN{exit !(${py:-0} >= 3.11)}"; record python_ge_3_11 "$(yn $?)" "version
 
 # 4. signing team present
 [ -n "${DROIDBRIDGE_DEVELOPMENT_TEAM:-}" ]; record team_env_set "$(yn $?)"
-security find-identity -v -p codesigning 2>/dev/null | grep -q "Apple Development"
+has "$(security find-identity -v -p codesigning 2>/dev/null)" "Apple Development"
 record development_identity "$(yn $?)"
 
 # 5. exactly one authorized adb device
@@ -46,12 +50,13 @@ fi
 if [ "${count:-0}" = "1" ]; then
   api="$("$adb" shell getprop ro.build.version.sdk 2>/dev/null | tr -d '\r')"
   [ "${api:-0}" -ge 26 ]; record android_api_ge_26 "$(yn $?)" "sdk=$api"
-  "$adb" shell pm list packages 2>/dev/null | tr -d '\r' | grep -qx "package:io.droidbridge.android"
+  has "$("$adb" shell pm list packages 2>/dev/null | tr -d '\r')" "^package:io\.droidbridge\.android$"
   record app_installed "$(yn $?)"
   # mobile data on + a cellular transport present
-  "$adb" shell settings get global mobile_data 2>/dev/null | tr -d '\r' | grep -qx 1
+  has "$("$adb" shell settings get global mobile_data 2>/dev/null | tr -d '\r')" "^1$"
   record mobile_data_on "$(yn $?)"
-  "$adb" shell dumpsys connectivity 2>/dev/null | grep -qiE "TRANSPORT_CELLULAR|type: MOBILE"
+  # A live cellular NetworkAgent shows "Transports: CELLULAR" in its nc{} block.
+  has "$("$adb" shell dumpsys connectivity 2>/dev/null)" "Transports: CELLULAR"
   record cellular_network_visible "$(yn $?)"
 else
   record android_api_ge_26 false; record app_installed false
