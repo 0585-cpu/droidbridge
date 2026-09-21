@@ -50,7 +50,7 @@
 
 - [x] **Phase 1 — Foundation:** DBP/1 fixture, C codec/policy, probe와 foundation gate를 통과한다.
 - [x] **Phase 2 — Android Relay:** 실제 Android에서 pairing, cellular-bound TCP/DNS, loopback relay smoke를 통과한다.
-- [ ] **Phase 3 — macOS Control Plane:** signed HostApp으로 ADB, pairing, Keychain, authenticated health를 검증한다.
+- [x] **Phase 3 — macOS Control Plane:** signed HostApp으로 ADB, pairing, Keychain, authenticated health를 검증한다.
 - [ ] **Phase 4 — Packet Tunnel:** C/lwIP data plane, Network Extension, DNS bridge와 fail-closed preflight를 통과한다.
 - [ ] **Phase 5 — Acceptance:** 실제 기기에서 14개 수용 기준, 1시간 soak, 성능·누출 검증 후에만 `v0.1.0-b1`을 만든다.
 

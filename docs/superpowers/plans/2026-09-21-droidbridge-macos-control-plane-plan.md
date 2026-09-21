@@ -53,7 +53,7 @@
 - Consumes: fixed bundle ids, App Group and runtime configuration from roadmap.
 - Produces: local package `DroidBridgeShared`; generated `DroidBridge.xcodeproj`; buildable HostApp and an intentionally unavailable data-plane extension.
 
-- [ ] **Step 1: Write the failing runtime configuration round-trip test**
+- [x] **Step 1: Write the failing runtime configuration round-trip test**
 
 ```swift
 import XCTest
@@ -78,7 +78,7 @@ final class TunnelRuntimeConfigurationTests: XCTestCase {
 
 Also test relay host must be loopback, port must be 27183, and maximumFlows must be 1...256.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```bash
 swift test --package-path macos/Shared
@@ -86,7 +86,7 @@ swift test --package-path macos/Shared
 
 Expected: failure because package and types do not exist.
 
-- [ ] **Step 3: Create exact project targets and minimal implementations**
+- [x] **Step 3: Create exact project targets and minimal implementations**
 
 `Package.swift` declares macOS 14, Swift language mode 6, one library target and one test target. `project.yml` defines:
 
@@ -137,7 +137,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
 `bootstrap-macos.sh` verifies XcodeGen 2.46.0, runs `xcodegen generate`, then `swift test --package-path macos/Shared`.
 
-- [ ] **Step 4: Run package tests and unsigned build**
+- [x] **Step 4: Run package tests and unsigned build**
 
 ```bash
 ./scripts/bootstrap-macos.sh
@@ -147,7 +147,7 @@ xcodebuild -project DroidBridge.xcodeproj -scheme DroidBridgeHost \
 
 Expected: Swift package tests and unsigned compilation pass. Actual Packet Tunnel execution is not part of this task.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add project.yml macos scripts/bootstrap-macos.sh
@@ -169,7 +169,7 @@ git commit -m "build(macos): scaffold host and packet tunnel targets"
 - Consumes: environment/path candidates.
 - Produces: `AdbClient.devices()`, `forward(serial:hostPort:devicePort:)`, `removeForward`, `startActivity`, `packagePath`; all commands have a 5-second default timeout.
 
-- [ ] **Step 1: Write failing parser and timeout tests**
+- [x] **Step 1: Write failing parser and timeout tests**
 
 ```swift
 func testParsesAuthorizedUnauthorizedAndOfflineDevices() async throws {
@@ -197,13 +197,13 @@ func testTimedOutProcessIsTerminated() async {
 
 Add tests for daemon startup noise, blank lines, duplicate serials, exit code nonzero with stderr, and multiple Homebrew/path candidates.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```bash
 swift test --package-path macos/Shared --filter Adb
 ```
 
-- [ ] **Step 3: Implement safe process execution**
+- [x] **Step 3: Implement safe process execution**
 
 `ProcessRunning` must return `ProcessResult(exitCode, stdout, stderr)` and accept executable URL, argument array, environment allowlist, and `Duration`. Never invoke a shell and never concatenate serial numbers into command strings.
 
@@ -217,7 +217,7 @@ adb -s SERIAL forward tcp:HOST_PORT tcp:DEVICE_PORT
 
 It records only forwards created by the current `AdbClient` instance and removes only those entries.
 
-- [ ] **Step 4: Run all ADB tests**
+- [x] **Step 4: Run all ADB tests**
 
 ```bash
 swift test --package-path macos/Shared --filter Adb
@@ -225,7 +225,7 @@ swift test --package-path macos/Shared --filter Adb
 
 Expected: parser, conflict and timeout tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add macos/Shared/Sources/DroidBridgeShared/Process macos/Shared/Sources/DroidBridgeShared/ADB macos/Shared/Tests
@@ -247,7 +247,7 @@ git commit -m "feat(macos): manage adb devices and forwards safely"
 - Consumes: a 32-byte Pairing Secret and non-secret `TunnelRuntimeConfiguration`.
 - Produces: `PairingSecretStore.save/load/delete`, `RuntimeConfigurationStore.write/read/delete`; both HostApp and extension share the same access groups.
 
-- [ ] **Step 1: Write failing storage contract tests**
+- [x] **Step 1: Write failing storage contract tests**
 
 ```swift
 func testSecretStoreRejectsWrongLengthAndNeverReturnsString() throws {
@@ -269,13 +269,13 @@ func testRuntimeWriteIsAtomicAndMode0600() throws {
 
 Also test corrupted JSON, missing App Group container, replace existing config, and secret-like keys absent from serialized JSON.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```bash
 swift test --package-path macos/Shared --filter 'PairingSecretStore|RuntimeConfigurationStore'
 ```
 
-- [ ] **Step 3: Implement storage**
+- [x] **Step 3: Implement storage**
 
 Keychain query uses `kSecClassGenericPassword`, service `io.droidbridge.pairing.v1`, account equal to peer id, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, and configured access group. Replace existing data with `SecItemUpdate`; map `errSecItemNotFound`, duplicate, entitlement and interaction errors to typed `DroidBridgeError` values.
 
@@ -283,7 +283,7 @@ Runtime config writes JSON to App Group file `tunnel-runtime.json` via a unique 
 
 Entitlements include the same App Group and the literal keychain entry `$(AppIdentifierPrefix)io.droidbridge.shared` on HostApp and PacketTunnel. Only the extension receives `com.apple.developer.networking.networkextension = packet-tunnel-provider`.
 
-- [ ] **Step 4: Run tests and inspect entitlements**
+- [x] **Step 4: Run tests and inspect entitlements**
 
 ```bash
 swift test --package-path macos/Shared
@@ -293,7 +293,7 @@ swift test --package-path macos/Shared
 
 Expected: both print `group.io.droidbridge.shared`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add macos/Shared macos/HostApp/Resources/HostApp.entitlements macos/PacketTunnel/Resources/PacketTunnel.entitlements
@@ -314,7 +314,7 @@ git commit -m "feat(macos): protect pairing secret and runtime config"
 - Consumes: Android pairing endpoint on loopback 27184 and user approval closure.
 - Produces: `PairingResult(peerId, displayName, secret)` only after both proofs and approvals; progress events include six-digit SAS.
 
-- [ ] **Step 1: Write cross-language fixture and cancellation tests**
+- [x] **Step 1: Write cross-language fixture and cancellation tests**
 
 Use the same deterministic private scalars/nonces as Android unit tests and assert identical public key X9.63 bytes, transcript hash, 32-byte secret, six-digit SAS and confirmation HMAC.
 
@@ -333,13 +333,13 @@ func testCancellationBeforeApprovalDoesNotPersist() async throws {
 
 Test frame length 0/8193, invalid JSON, wrong role, transcript tamper, peer rejection, endpoint EOF and 60-second timeout.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```bash
 swift test --package-path macos/Shared --filter Pairing
 ```
 
-- [ ] **Step 3: Implement exact Android-compatible crypto and framing**
+- [x] **Step 3: Implement exact Android-compatible crypto and framing**
 
 Use `P256.KeyAgreement.PrivateKey`, raw X9.63 public representation, SHA256 transcript, HKDF-SHA256 with 32-byte output and info `DroidBridge DBP/1 Pairing`. Canonical JSON uses sorted UTF-8 keys and no insignificant whitespace. Four-byte length prefix is unsigned big-endian and maximum 8192.
 
@@ -355,7 +355,7 @@ public func pair(
 
 Zero mutable secret buffers with `resetBytes(in:)` on every failure/cancellation path. Persist through `PairingSecretStore` only after Android confirmation proof verifies.
 
-- [ ] **Step 4: Run tests including Python fixture parity**
+- [x] **Step 4: Run tests including Python fixture parity**
 
 ```bash
 swift test --package-path macos/Shared --filter Pairing
@@ -364,7 +364,7 @@ python3 -m unittest tools.tests.test_pairing_probe -v
 
 Expected: Swift and Python derive the same committed fixture values.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add macos/Shared/Sources/DroidBridgeShared/Pairing macos/Shared/Tests
@@ -386,7 +386,7 @@ git commit -m "feat(macos): pair with android using p256 sas"
 - Consumes: shared DBP fixtures, ADB client, Pairing Secret.
 - Produces: `RelayPreparer.prepare(device, secret) -> RelayPreparation`; authenticated `health()` response.
 
-- [ ] **Step 1: Write fixture and preparation rollback tests**
+- [x] **Step 1: Write fixture and preparation rollback tests**
 
 ```swift
 func testPrepareRollsBackPairingForwardWhenRelayForwardFails() async {
@@ -401,13 +401,13 @@ func testPrepareRollsBackPairingForwardWhenRelayForwardFails() async {
 
 Add byte-for-byte DBP vector tests, wrong HELLO_OK nonce, HMAC mismatch, health timeout, cellular unavailable response and app-not-running response.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```bash
 swift test --package-path macos/Shared --filter 'Dbp|Relay'
 ```
 
-- [ ] **Step 3: Implement DBP health protocol**
+- [x] **Step 3: Implement DBP health protocol**
 
 Health response payload is fixed as:
 
@@ -425,7 +425,7 @@ N bytes  UTF-8 carrier display name
 
 `RelayPreparer` verifies package `io.droidbridge.android`, creates pairing and relay forwards, asks ADB to open the Android activity if relay health is unavailable, and rolls back only forwards it created on failure.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 ```bash
 cp protocol/test-vectors/dbp-v1.json macos/Shared/Tests/DroidBridgeSharedTests/Fixtures-dbp-v1.json
@@ -434,7 +434,7 @@ swift test --package-path macos/Shared --filter 'Dbp|Relay'
 
 Expected: all vector and rollback tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add macos/Shared/Sources/DroidBridgeShared/Protocol macos/Shared/Sources/DroidBridgeShared/Relay macos/Shared/Tests
@@ -458,7 +458,7 @@ git commit -m "feat(macos): prepare and authenticate android relay"
 - Consumes: ADB, pairing, Keychain, relay preparer, runtime config store.
 - Produces: testable `DroidBridgeCoordinatorCore` actor in the shared package, a `@MainActor` HostApp adapter, and user actions `refresh`, `selectDevice`, `pair`, `prepareRelay`, `disconnect`.
 
-- [ ] **Step 1: Write failing state-machine tests**
+- [x] **Step 1: Write failing state-machine tests**
 
 ```swift
 func testUSBRemovalFromRelayReadyClearsForwardsButKeepsPairing() async {
@@ -479,13 +479,13 @@ func testMultipleDevicesRequiresSelection() async {
 
 Also test unauthorized guidance, pairing cancellation, health cellular unavailable, explicit Forget deletes secret, and Disconnect does not delete secret.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```bash
 swift test --package-path macos/Shared --filter HostStateMachine
 ```
 
-- [ ] **Step 3: Implement coordinator and UI**
+- [x] **Step 3: Implement coordinator and UI**
 
 `DroidBridgeCoordinatorCore` is an `actor` in `DroidBridgeShared`; all long-running operations have one owned `Task` cancelled before a new operation. `DroidBridgeCoordinatorAdapter` is `@MainActor`, observes the core through an `AsyncStream<HostAppState>`, and publishes immutable state to SwiftUI. This placement makes the state machine directly testable by the Swift package without importing the application target.
 
@@ -500,7 +500,7 @@ Use `MenuBarExtra("DroidBridge", systemImage: "cable.connector")`. UI must show:
 
 No button starts the Packet Tunnel in this plan. The status text explicitly says `Relay ready; full tunnel not installed` after health succeeds.
 
-- [ ] **Step 4: Build and run unit tests**
+- [x] **Step 4: Build and run unit tests**
 
 ```bash
 ./scripts/bootstrap-macos.sh
@@ -511,7 +511,7 @@ xcodebuild -project DroidBridge.xcodeproj -scheme DroidBridgeHost \
 
 Expected: all tests pass and menu bar app compiles.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add macos/HostApp macos/Shared/Sources/DroidBridgeShared/Host macos/Shared/Tests
@@ -530,7 +530,7 @@ git commit -m "feat(macos): add relay preparation menu bar workflow"
 - Consumes: signed HostApp, actual Android relay, approved ADB device.
 - Produces: verified path from device detection through pairing and authenticated cellular health.
 
-- [ ] **Step 1: Add non-device preflight tests**
+- [x] **Step 1: Add non-device preflight tests**
 
 `run-macos-control-smoke.sh --preflight` checks `uname -m == arm64`, macOS major >= 14, XcodeGen 2.46.0, valid signing team variable `DROIDBRIDGE_DEVELOPMENT_TEAM`, one authorized ADB device, and installed Android package. Each failure prints one remediation command and exits nonzero.
 
@@ -542,7 +542,7 @@ Run:
 
 Expected: fails clearly until signing team and a device are available; it must never modify forwards during preflight.
 
-- [ ] **Step 2: Implement signed build and launch path**
+- [x] **Step 2: Implement signed build and launch path**
 
 The script runs:
 
@@ -557,7 +557,7 @@ open build/DerivedData/Build/Products/Debug/DroidBridgeHost.app
 
 It does not automate SAS approval. The document instructs the operator to pair, press Start on Android, select Prepare Relay, and capture only safe state screenshots with no secret material.
 
-- [ ] **Step 3: Execute the real-device smoke**
+- [x] **Step 3: Execute the real-device smoke**
 
 ```bash
 ./scripts/run-macos-control-smoke.sh
@@ -575,7 +575,7 @@ Full tunnel: not installed
 
 Then unplug USB. Within the next poll interval, UI becomes `Device missing`, both forwards are removed, and pairing remains available after reconnect.
 
-- [ ] **Step 4: Run the complete control-plane gate**
+- [x] **Step 4: Run the complete control-plane gate**
 
 ```bash
 swift test --package-path macos/Shared
@@ -586,7 +586,7 @@ git status --short
 
 Expected: all tests and real-device health pass; working tree is clean.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/run-macos-control-smoke.sh docs/macos-control-smoke.md README.md Makefile
