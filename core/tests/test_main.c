@@ -8,6 +8,8 @@ void run_destination_policy_tests(void);
 void run_ipv4_tcp_tests(void);
 void run_tcp_rewrite_tests(void);
 void run_lwip_adapter_tests(void);
+void run_packet_engine_tcp_tests(void);
+void run_flow_limits_tests(void);
 
 int main(void) {
     run_dbp_codec_tests();
@@ -15,6 +17,8 @@ int main(void) {
     run_ipv4_tcp_tests();
     run_tcp_rewrite_tests();
     run_lwip_adapter_tests();
+    run_packet_engine_tcp_tests();
+    run_flow_limits_tests();
     if (test_failures != 0) {
         fprintf(stderr, "%d assertion(s) failed\n", test_failures);
         return 1;

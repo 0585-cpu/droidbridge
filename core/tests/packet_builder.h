@@ -11,6 +11,13 @@ size_t build_tcp_packet(uint8_t *out, size_t capacity,
                         const char *dst_ip, uint16_t dst_port,
                         uint8_t flags, const uint8_t *payload, size_t payload_length);
 
+/* Full variant that sets seq/ack (needed to build valid handshake ACKs). */
+size_t build_tcp_packet_full(uint8_t *out, size_t capacity,
+                             const char *src_ip, uint16_t src_port,
+                             const char *dst_ip, uint16_t dst_port,
+                             uint8_t flags, uint32_t seq, uint32_t ack,
+                             const uint8_t *payload, size_t payload_length);
+
 db_flow_key_t flow_key(const char *src_ip, uint16_t src_port, const char *dst_ip, uint16_t dst_port);
 int parse_ipv4(const char *text, uint8_t out[4]);
 
