@@ -28,8 +28,33 @@ docs/       specs, plans, threat model, operations
 
 ```bash
 make test-core          # configure + build + ctest
-make verify-foundation  # + environment check + protocol vector check
+make verify-foundation  # + environment check, protocol vector check, Python tests
+make fuzz-smoke         # 10s libFuzzer run per parser target (needs `brew install llvm` on macOS)
 ```
+
+Regenerate fixtures after editing `tools/generate_protocol_vectors.py` (the
+canonical source for all wire encodings):
+
+```bash
+python3 tools/generate_protocol_vectors.py
+```
+
+## Probe a relay
+
+`tools/mock_relay.py` stands in for the Android relay; `tools/dbp_probe.py`
+checks wire compatibility against any relay. The secret is read only from
+`DROIDBRIDGE_TEST_SECRET` (64 hex chars) and is never printed.
+
+```bash
+export DROIDBRIDGE_TEST_SECRET=0000000000000000000000000000000000000000000000000000000000000001
+python3 tools/mock_relay.py --port 27183 &
+python3 tools/dbp_probe.py health --host 127.0.0.1 --port 27183
+python3 tools/dbp_probe.py open --host 127.0.0.1 --port 27183 --destination example.com:443
+python3 tools/dbp_probe.py dns --host 127.0.0.1 --port 27183 --name example.com --type A
+```
+
+CI (`.github/workflows/foundation.yml`) runs the same gate on macOS 15 and
+Ubuntu 24.04 with ASan/UBSan.
 
 ## License
 

@@ -1,0 +1,43 @@
+name: foundation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Only the documented all-zero test fixture secret is ever used here.
+env:
+  DROIDBRIDGE_TEST_SECRET: "0000000000000000000000000000000000000000000000000000000000000001"
+
+jobs:
+  foundation:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake llvm
+      - name: Install toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake clang
+      - name: Environment and vectors
+        run: |
+          python3 tools/check_environment.py
+          python3 tools/generate_protocol_vectors.py --check
+      - name: Python tests
+        run: python3 -m unittest discover -s tools/tests -p 'test_*.py' -v
+      - name: C tests (ASan/UBSan)
+        run: |
+          cmake -S core -B build/core-asan -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer'
+          cmake --build build/core-asan --parallel
+          ctest --test-dir build/core-asan --output-on-failure
+      - name: Fuzz smoke (10s per target)
+        run: make fuzz-smoke
