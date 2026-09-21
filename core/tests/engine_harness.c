@@ -37,7 +37,12 @@ static void cb_close(void *ctx, db_flow_id_t flow, db_close_reason_t reason) {
     h->close_count++;
     h->last_close_reason = reason;
 }
-static void cb_dns(void *ctx, db_flow_id_t flow, const uint8_t *q, size_t len) { (void)ctx;(void)flow;(void)q;(void)len; }
+static void cb_dns(void *ctx, db_flow_id_t flow, const uint8_t *q, size_t len) {
+    harness_t *h = ctx;
+    h->dns_query_count++;
+    h->last_query_id = flow;
+    if (len <= sizeof h->last_dns_query) { memcpy(h->last_dns_query, q, len); h->last_dns_query_len = len; }
+}
 static uint32_t cb_rand(void *ctx) { (void)ctx; return 0x12345678u; }
 static uint32_t cb_now(void *ctx) { (void)ctx; return 0; }
 

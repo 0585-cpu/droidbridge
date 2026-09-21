@@ -65,3 +65,38 @@ size_t build_tcp_packet(uint8_t *out, size_t capacity,
     return build_tcp_packet_full(out, capacity, src_ip, src_port, dst_ip, dst_port,
                                  flags, 1, 0, payload, payload_length);
 }
+
+size_t build_udp_dns_query(uint8_t *out, size_t capacity, const char *src_ip, uint16_t src_port,
+                           const char *dst_ip, uint16_t dst_port, uint16_t txid, const char *qname) {
+    uint8_t dns[512];
+    size_t d = 0;
+    dns[d++] = (uint8_t)(txid >> 8); dns[d++] = (uint8_t)txid;
+    dns[d++] = 0x01; dns[d++] = 0x00; /* RD */
+    dns[d++] = 0x00; dns[d++] = 0x01; /* QDCOUNT 1 */
+    dns[d++] = 0; dns[d++] = 0; dns[d++] = 0; dns[d++] = 0; dns[d++] = 0; dns[d++] = 0;
+    const char *p = qname;
+    while (*p) {
+        const char *dot = p; size_t len = 0;
+        while (*dot && *dot != '.') { dot++; len++; }
+        dns[d++] = (uint8_t)len;
+        memcpy(dns + d, p, len); d += len;
+        p = (*dot == '.') ? dot + 1 : dot;
+    }
+    dns[d++] = 0;                      /* root label */
+    dns[d++] = 0x00; dns[d++] = 0x01;  /* QTYPE A */
+    dns[d++] = 0x00; dns[d++] = 0x01;  /* QCLASS IN */
+
+    size_t total = 20 + 8 + d;
+    if (total > capacity) return 0;
+    memset(out, 0, total);
+    out[0] = 0x45; out[2] = (uint8_t)(total >> 8); out[3] = (uint8_t)total; out[8] = 64; out[9] = DB_IPPROTO_UDP;
+    if (parse_ipv4(src_ip, out + 12) != 0) return 0;
+    if (parse_ipv4(dst_ip, out + 16) != 0) return 0;
+    write_u16(out + 10, db_ipv4_header_checksum(out, 20));
+    uint8_t *udp = out + 20;
+    write_u16(udp + 0, src_port); write_u16(udp + 2, dst_port);
+    write_u16(udp + 4, (uint16_t)(8 + d));
+    memcpy(udp + 8, dns, d);
+    /* leave UDP checksum 0 (optional for IPv4) */
+    return total;
+}

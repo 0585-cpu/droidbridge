@@ -4,6 +4,7 @@
 #include "droidbridge_core.h"
 #include "droidbridge_packet.h"
 #include "droidbridge_lwip.h"
+#include "droidbridge_dns.h"
 
 #include "lwip/tcp.h"
 #include "lwip/ip4_addr.h"
@@ -39,6 +40,7 @@ struct db_engine {
     flow_t *flows;
     db_flow_id_t next_id;
     size_t active;
+    db_dns_table_t dns;
 };
 
 /* ---- flow lookup / lifecycle ---- */
@@ -222,6 +224,7 @@ db_engine_t *db_engine_create(const db_engine_config_t *config) {
     e->flow_table = db_flow_table_create(config->maximum_flows);
     if (e->flows == NULL || e->flow_table == NULL) { db_engine_destroy(e); return NULL; }
     e->next_id = 1;
+    db_dns_table_init(&e->dns);
 
     e->lwip = db_lwip_init(engine_emit, e,
                            (db_lwip_now_fn)config->now_ms, (db_lwip_rand_fn)config->random_u32, config->context);
@@ -262,11 +265,47 @@ static void emit_rst_for_syn(db_engine_t *e, const uint8_t *packet, size_t lengt
     e->config.emit_packet(e->config.context, rst, 40);
 }
 
+/* Intercept UDP DNS to 198.18.0.1:53. Any other UDP is dropped (B1 forwards no general UDP). */
+static db_engine_status_t engine_handle_udp(db_engine_t *e, const uint8_t *packet, size_t length, const db_ipv4_view_t *ip) {
+    size_t udp_off = ip->header_length;
+    if (udp_off + 8 > ip->total_length) return DB_ENGINE_OK;
+    const uint8_t *udp = packet + udp_off;
+    uint16_t dst_port = ((uint16_t)udp[2] << 8) | udp[3];
+    if (dst_port != 53) return DB_ENGINE_OK; /* not DNS: drop */
+    if (ip->dst[0] != DB_GATEWAY_IP0 || ip->dst[1] != DB_GATEWAY_IP1 ||
+        ip->dst[2] != DB_GATEWAY_IP2 || ip->dst[3] != DB_GATEWAY_IP3) return DB_ENGINE_OK;
+    uint16_t src_port = ((uint16_t)udp[0] << 8) | udp[1];
+    const uint8_t *dns = udp + 8;
+    size_t dns_len = ip->total_length - udp_off - 8;
+    if (!db_dns_valid(dns, dns_len)) return DB_ENGINE_OK; /* malformed: drop, no reflect */
+    uint32_t query_id;
+    if (db_dns_register(&e->dns, ip->src, src_port, db_dns_transaction_id(dns),
+                        e->config.now_ms ? e->config.now_ms(e->config.context) : 0, &query_id) != 0) {
+        return DB_ENGINE_OK; /* table full: drop */
+    }
+    if (e->config.send_dns) e->config.send_dns(e->config.context, query_id, dns, dns_len);
+    return DB_ENGINE_OK;
+}
+
+db_engine_status_t db_engine_on_dns_response(db_engine_t *e, db_flow_id_t query, const uint8_t *response, size_t length) {
+    if (e == NULL || response == NULL) return DB_ENGINE_ERR_ARGUMENT;
+    db_dns_entry_t entry;
+    if (db_dns_take(&e->dns, query, &entry) != 0) return DB_ENGINE_ERR_UNKNOWN_FLOW;
+    if (!db_dns_valid(response, length)) return DB_ENGINE_ERR_STATE;
+    if (db_dns_transaction_id(response) != entry.txid) return DB_ENGINE_ERR_STATE;
+    uint8_t out[1500];
+    size_t n = db_dns_build_udp_response(&entry, response, length, out, sizeof out);
+    if (n == 0) return DB_ENGINE_ERR_STATE;
+    e->config.emit_packet(e->config.context, out, n);
+    return DB_ENGINE_OK;
+}
+
 db_engine_status_t db_engine_input_packet(db_engine_t *e, const uint8_t *packet, size_t length) {
     if (e == NULL || packet == NULL) return DB_ENGINE_ERR_ARGUMENT;
     db_ipv4_view_t ip;
     if (db_ipv4_parse(packet, length, &ip) != DB_PACKET_OK) return DB_ENGINE_OK; /* drop non-IPv4/fragment */
-    if (ip.protocol != DB_IPPROTO_TCP) return DB_ENGINE_OK; /* B1: no general UDP here */
+    if (ip.protocol == DB_IPPROTO_UDP) return engine_handle_udp(e, packet, length, &ip);
+    if (ip.protocol != DB_IPPROTO_TCP) return DB_ENGINE_OK; /* B1: no other protocols */
     db_tcp_view_t tcp;
     if (db_tcp_parse(packet, length, &ip, &tcp) != DB_PACKET_OK) return DB_ENGINE_OK;
 

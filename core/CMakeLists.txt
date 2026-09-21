@@ -21,7 +21,7 @@ if(DROIDBRIDGE_BUILD_LWIP AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lwi
   include(${LWIP_DIR}/src/Filelists.cmake)
   add_library(droidbridge_lwip STATIC
       ${lwipcore_SRCS} ${lwipcore4_SRCS} ${lwipnetif_SRCS}
-      ports/lwip_port.c src/lwip_adapter.c src/packet_engine.c)
+      ports/lwip_port.c src/lwip_adapter.c src/packet_engine.c src/dns_bridge.c src/dns_packet.c)
   target_include_directories(droidbridge_lwip PUBLIC ${LWIP_INCLUDE_DIRS} include)
   # lwIP 2.2 has minor sign-conversion/unused warnings; keep our own code warned but not lwIP.
   target_compile_options(droidbridge_lwip PRIVATE -Wno-everything)

@@ -71,6 +71,9 @@ db_engine_status_t db_engine_on_relay_data(db_engine_t *engine, db_flow_id_t flo
 db_engine_status_t db_engine_on_relay_writable(db_engine_t *engine, db_flow_id_t flow);
 db_engine_status_t db_engine_on_relay_closed(db_engine_t *engine, db_flow_id_t flow, int is_error);
 
+/* Virtual DNS: `query` is the flow/query id passed to send_dns. Emits the UDP DNS answer to the Mac. */
+db_engine_status_t db_engine_on_dns_response(db_engine_t *engine, db_flow_id_t query, const uint8_t *response, size_t length);
+
 size_t db_engine_active_flow_count(const db_engine_t *engine);
 
 #ifdef __cplusplus

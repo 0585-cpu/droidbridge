@@ -22,6 +22,10 @@ typedef struct {
     uint8_t relay_outbound[HARNESS_BUF];
     size_t relay_outbound_len;
     long send_return;            /* what send_flow returns (override for backpressure tests) */
+    int dns_query_count;
+    uint32_t last_query_id;
+    uint8_t last_dns_query[512];
+    size_t last_dns_query_len;
     int close_count;
     db_close_reason_t last_close_reason;
     /* single-flow seq tracking for building packets */
