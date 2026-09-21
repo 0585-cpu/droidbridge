@@ -11,6 +11,7 @@ void run_lwip_adapter_tests(void);
 void run_packet_engine_tcp_tests(void);
 void run_flow_limits_tests(void);
 void run_dns_bridge_tests(void);
+void run_128_flows_tests(void);
 
 int main(void) {
     run_dbp_codec_tests();
@@ -21,6 +22,7 @@ int main(void) {
     run_packet_engine_tcp_tests();
     run_flow_limits_tests();
     run_dns_bridge_tests();
+    run_128_flows_tests();
     if (test_failures != 0) {
         fprintf(stderr, "%d assertion(s) failed\n", test_failures);
         return 1;

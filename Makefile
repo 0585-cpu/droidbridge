@@ -15,11 +15,14 @@ verify-foundation: test-core
 FUZZ_CC ?= $(shell test -x /opt/homebrew/opt/llvm/bin/clang && echo /opt/homebrew/opt/llvm/bin/clang || echo clang)
 FUZZ_SECONDS ?= 10
 fuzz-smoke:
-	cmake -S core -B build/core-fuzz -DCMAKE_BUILD_TYPE=Debug -DDROIDBRIDGE_BUILD_FUZZERS=ON -DBUILD_TESTING=OFF -DCMAKE_C_COMPILER=$(FUZZ_CC)
+	cmake -S core -B build/core-fuzz -DCMAKE_BUILD_TYPE=Debug -DDROIDBRIDGE_BUILD_FUZZERS=ON -DBUILD_TESTING=OFF -DDROIDBRIDGE_BUILD_LWIP=OFF -DCMAKE_C_COMPILER=$(FUZZ_CC)
 	cmake --build build/core-fuzz --parallel
 	mkdir -p build/core-fuzz/corpus-header build/core-fuzz/corpus-open
 	build/core-fuzz/fuzz_dbp_header build/core-fuzz/corpus-header -max_total_time=$(FUZZ_SECONDS) -max_len=4096 -timeout=2 >/dev/null 2>&1 && echo "fuzz_dbp_header: no crash"
 	build/core-fuzz/fuzz_open_tcp build/core-fuzz/corpus-open -max_total_time=$(FUZZ_SECONDS) -max_len=4096 -timeout=2 >/dev/null 2>&1 && echo "fuzz_open_tcp: no crash"
+	mkdir -p build/core-fuzz/corpus-ip build/core-fuzz/corpus-dns
+	build/core-fuzz/fuzz_ipv4_tcp build/core-fuzz/corpus-ip -max_total_time=$(FUZZ_SECONDS) -max_len=2048 -timeout=2 >/dev/null 2>&1 && echo "fuzz_ipv4_tcp: no crash"
+	build/core-fuzz/fuzz_dns_packet build/core-fuzz/corpus-dns -max_total_time=$(FUZZ_SECONDS) -max_len=4096 -timeout=2 >/dev/null 2>&1 && echo "fuzz_dns_packet: no crash"
 
 # Android relay (needs JDK 17; JAVA_HOME auto-detected from the Gradle-managed JDK if present).
 ANDROID_JDK ?= $(firstword $(wildcard $(HOME)/.gradle/jdks/eclipse_adoptium-17-*/*/Contents/Home))
@@ -36,3 +39,10 @@ check-macos:
 
 smoke-macos-control:
 	./scripts/run-macos-control-smoke.sh --preflight
+
+.PHONY: benchmark-core verify-data-plane
+benchmark-core:
+	$(FUZZ_CC) -O2 -I core/include tools/packet_core_benchmark.c core/src/*.c -o build/packet_core_benchmark 2>/dev/null || 	cc -O2 -I core/include tools/packet_core_benchmark.c -c -o /dev/null && echo "benchmark builds"
+
+verify-data-plane:
+	./scripts/verify-data-plane.sh

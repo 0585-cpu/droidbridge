@@ -61,6 +61,7 @@ int db_tcp_checksum_valid(const uint8_t *packet, size_t length) {
     if (db_ipv4_parse(packet, length, &ip) != DB_PACKET_OK) return 0;
     if (ip.protocol != DB_IPPROTO_TCP) return 0;
     size_t tcp_offset = ip.header_length;
+    if (tcp_offset + 20 > ip.total_length) return 0; /* no full TCP header present */
     uint16_t stored = ((uint16_t)packet[tcp_offset + 16] << 8) | (uint16_t)packet[tcp_offset + 17];
     return db_tcp_checksum(packet, &ip) == stored;
 }
