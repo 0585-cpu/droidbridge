@@ -1,7 +1,7 @@
 import DroidBridgeShared
 import Foundation
 
-func runConfigurationChecks(_ r: inout CheckRunner) {
+func runConfigurationChecks(_ r: CheckRunner) {
     func valid(_ flows: UInt16 = 128, host: String = "127.0.0.1", port: UInt16 = 27183) throws -> TunnelRuntimeConfiguration {
         try TunnelRuntimeConfiguration(deviceSerial: "R58M123456A", relayHost: host, relayPort: port,
                                        pairedPeerId: "peer-1", keychainAccount: "peer-1", maximumFlows: flows)
