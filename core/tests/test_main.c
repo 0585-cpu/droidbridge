@@ -1,9 +1,14 @@
 #include <stdio.h>
-int dbp_codec_self_test(void);
+#include "test_support.h"
+
+int test_failures = 0;
+
+void run_dbp_codec_tests(void);
 
 int main(void) {
-    if (dbp_codec_self_test() != 0) {
-        fprintf(stderr, "dbp codec self test failed\n");
+    run_dbp_codec_tests();
+    if (test_failures != 0) {
+        fprintf(stderr, "%d assertion(s) failed\n", test_failures);
         return 1;
     }
     return 0;
