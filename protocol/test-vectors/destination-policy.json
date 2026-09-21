@@ -1,0 +1,286 @@
+{
+  "blocked_cidrs": [
+    {
+      "cidr": "0.0.0.0/8",
+      "reason": "RESERVED"
+    },
+    {
+      "cidr": "10.0.0.0/8",
+      "reason": "PRIVATE"
+    },
+    {
+      "cidr": "100.64.0.0/10",
+      "reason": "SHARED"
+    },
+    {
+      "cidr": "127.0.0.0/8",
+      "reason": "LOOPBACK"
+    },
+    {
+      "cidr": "169.254.0.0/16",
+      "reason": "LINK_LOCAL"
+    },
+    {
+      "cidr": "172.16.0.0/12",
+      "reason": "PRIVATE"
+    },
+    {
+      "cidr": "192.0.0.0/24",
+      "reason": "RESERVED"
+    },
+    {
+      "cidr": "192.0.2.0/24",
+      "reason": "DOCUMENTATION"
+    },
+    {
+      "cidr": "192.168.0.0/16",
+      "reason": "PRIVATE"
+    },
+    {
+      "cidr": "198.18.0.0/15",
+      "reason": "BENCHMARK"
+    },
+    {
+      "cidr": "198.51.100.0/24",
+      "reason": "DOCUMENTATION"
+    },
+    {
+      "cidr": "203.0.113.0/24",
+      "reason": "DOCUMENTATION"
+    },
+    {
+      "cidr": "224.0.0.0/4",
+      "reason": "MULTICAST"
+    },
+    {
+      "cidr": "240.0.0.0/4",
+      "reason": "RESERVED"
+    }
+  ],
+  "cases": [
+    {
+      "address": "0.0.0.0",
+      "expected": "RESERVED"
+    },
+    {
+      "address": "0.255.255.255",
+      "expected": "RESERVED"
+    },
+    {
+      "address": "1.0.0.0",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "9.255.255.255",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "10.0.0.0",
+      "expected": "PRIVATE"
+    },
+    {
+      "address": "10.255.255.255",
+      "expected": "PRIVATE"
+    },
+    {
+      "address": "11.0.0.0",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "93.184.216.34",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "100.63.255.255",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "100.64.0.0",
+      "expected": "SHARED"
+    },
+    {
+      "address": "100.127.255.255",
+      "expected": "SHARED"
+    },
+    {
+      "address": "100.128.0.0",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "126.255.255.255",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "127.0.0.0",
+      "expected": "LOOPBACK"
+    },
+    {
+      "address": "127.255.255.255",
+      "expected": "LOOPBACK"
+    },
+    {
+      "address": "128.0.0.0",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "169.253.255.255",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "169.254.0.0",
+      "expected": "LINK_LOCAL"
+    },
+    {
+      "address": "169.254.255.255",
+      "expected": "LINK_LOCAL"
+    },
+    {
+      "address": "169.255.0.0",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "172.15.255.255",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "172.16.0.0",
+      "expected": "PRIVATE"
+    },
+    {
+      "address": "172.31.255.255",
+      "expected": "PRIVATE"
+    },
+    {
+      "address": "172.32.0.0",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "191.255.255.255",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "192.0.0.0",
+      "expected": "RESERVED"
+    },
+    {
+      "address": "192.0.0.255",
+      "expected": "RESERVED"
+    },
+    {
+      "address": "192.0.1.0",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "192.0.1.255",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "192.0.2.0",
+      "expected": "DOCUMENTATION"
+    },
+    {
+      "address": "192.0.2.255",
+      "expected": "DOCUMENTATION"
+    },
+    {
+      "address": "192.0.3.0",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "192.167.255.255",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "192.168.0.0",
+      "expected": "PRIVATE"
+    },
+    {
+      "address": "192.168.255.255",
+      "expected": "PRIVATE"
+    },
+    {
+      "address": "192.169.0.0",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "198.17.255.255",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "198.18.0.0",
+      "expected": "BENCHMARK"
+    },
+    {
+      "address": "198.19.255.255",
+      "expected": "BENCHMARK"
+    },
+    {
+      "address": "198.20.0.0",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "198.51.99.255",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "198.51.100.0",
+      "expected": "DOCUMENTATION"
+    },
+    {
+      "address": "198.51.100.255",
+      "expected": "DOCUMENTATION"
+    },
+    {
+      "address": "198.51.101.0",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "203.0.112.255",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "203.0.113.0",
+      "expected": "DOCUMENTATION"
+    },
+    {
+      "address": "203.0.113.255",
+      "expected": "DOCUMENTATION"
+    },
+    {
+      "address": "203.0.114.0",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "223.255.255.255",
+      "expected": "ALLOW"
+    },
+    {
+      "address": "224.0.0.0",
+      "expected": "MULTICAST"
+    },
+    {
+      "address": "239.255.255.255",
+      "expected": "MULTICAST"
+    },
+    {
+      "address": "240.0.0.0",
+      "expected": "RESERVED"
+    },
+    {
+      "address": "255.255.255.255",
+      "expected": "RESERVED"
+    }
+  ],
+  "results": {
+    "ALLOW": 0,
+    "BENCHMARK": 7,
+    "DOCUMENTATION": 6,
+    "LINK_LOCAL": 4,
+    "LOOPBACK": 3,
+    "MULTICAST": 8,
+    "PRIVATE": 1,
+    "RESERVED": 5,
+    "SHARED": 2
+  },
+  "schema": "destination-policy-v1"
+}
