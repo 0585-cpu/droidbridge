@@ -29,3 +29,7 @@ local.properties
 *.keystore
 *.jks
 .env
+
+# android
+android/.kotlin/
+android/**/build/
