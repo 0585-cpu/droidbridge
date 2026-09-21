@@ -1,0 +1,31 @@
+# build output
+build/
+*.o
+*.a
+*.dSYM/
+compile_commands.json
+__pycache__/
+*.pyc
+.pytest_cache/
+crash-*
+leak-*
+timeout-*
+fuzz-*.log
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+.gradle/
+local.properties
+
+# secrets - never commit
+*.pem
+*.p12
+*.keystore
+*.jks
+.env
