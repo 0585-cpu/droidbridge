@@ -133,9 +133,9 @@ func runRelayFlowChecks(_ r: CheckRunner) {
         let delegate = RecordingFlowDelegate()
         let flow = RelayFlowConnection(flowId: 10, destination: .ipv4("1.1.1.1", 443),
                                        secret: flowSecret, transport: transport, delegate: delegate)
-        let accepted = await flow.enqueueFromCore(Data(repeating: 1, count: 256 * 1024))
-        let refused = await flow.enqueueFromCore(Data([2]))
-        let buffered = await flow.bufferedOutboundBytes
+        let accepted = flow.enqueueFromCore(Data(repeating: 1, count: 256 * 1024))
+        let refused = flow.enqueueFromCore(Data([2]))
+        let buffered = flow.bufferedOutboundBytes
         r.check(accepted, "256 KiB accepted")
         r.check(!refused, "one byte over limit refused (backpressure)")
         r.check(buffered == 256 * 1024, "buffer does not grow past limit")
