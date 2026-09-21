@@ -36,3 +36,8 @@ android/**/build/
 
 # python virtualenv
 .venv/
+
+# xcode generated
+DroidBridge.xcodeproj/
+macos/Shared/.build/
+*.xcodeproj/

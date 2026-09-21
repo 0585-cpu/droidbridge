@@ -1,0 +1,44 @@
+name: DroidBridge
+options:
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+packages:
+  DroidBridgeShared:
+    path: macos/Shared
+targets:
+  DroidBridgeHost:
+    type: application
+    platform: macOS
+    sources: [macos/HostApp]
+    dependencies:
+      - package: DroidBridgeShared
+      - target: DroidBridgePacketTunnel
+    info:
+      path: macos/HostApp/Resources/Info.plist
+      properties:
+        LSUIElement: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.droidbridge.macos
+        CODE_SIGN_ENTITLEMENTS: macos/HostApp/Resources/HostApp.entitlements
+        SWIFT_VERSION: "6.0"
+        MARKETING_VERSION: "0.1.0"
+  DroidBridgePacketTunnel:
+    type: app-extension
+    platform: macOS
+    sources: [macos/PacketTunnel]
+    dependencies:
+      - package: DroidBridgeShared
+      - sdk: NetworkExtension.framework
+    info:
+      path: macos/PacketTunnel/Resources/Info.plist
+      properties:
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.droidbridge.macos.PacketTunnel
+        CODE_SIGN_ENTITLEMENTS: macos/PacketTunnel/Resources/PacketTunnel.entitlements
+        SWIFT_VERSION: "6.0"

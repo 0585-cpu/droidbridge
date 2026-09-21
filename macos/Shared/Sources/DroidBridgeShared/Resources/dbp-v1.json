@@ -1,0 +1,227 @@
+{
+  "error_codes": {
+    "AUTH_FAILED": 1,
+    "CELLULAR_UNAVAILABLE": 4,
+    "CONNECT_REFUSED": 7,
+    "CONNECT_TIMEOUT": 6,
+    "DNS_FAILED": 5,
+    "INTERNAL_ERROR": 9,
+    "POLICY_DENIED": 3,
+    "SESSION_LIMIT": 8,
+    "VERSION_UNSUPPORTED": 2
+  },
+  "header_size": 64,
+  "health_status": {
+    "CELLULAR_UNAVAILABLE": 2,
+    "NOT_READY": 0,
+    "READY": 1
+  },
+  "hmac": "HMAC-SHA256 over header (hmac field zeroed) || payload",
+  "limits": {
+    "dns_packet_max": 4096,
+    "dns_packet_min": 12,
+    "health_response_max": 85,
+    "health_response_min": 22,
+    "max_domain_length": 253,
+    "max_sessions": 256
+  },
+  "magic_hex": "44425031",
+  "message_types": {
+    "DNS_QUERY": 32,
+    "DNS_RESPONSE": 33,
+    "HEALTH": 48,
+    "HEALTH_RESPONSE": 49,
+    "HELLO": 1,
+    "HELLO_OK": 2,
+    "OPEN_ERROR": 18,
+    "OPEN_OK": 17,
+    "OPEN_TCP": 16
+  },
+  "nonce_replay_window_entries": 1024,
+  "nonce_replay_window_seconds": 300,
+  "schema": "dbp-vectors-v1",
+  "secret_hex": "0000000000000000000000000000000000000000000000000000000000000001",
+  "timestamp_tolerance_seconds": 120,
+  "vectors": [
+    {
+      "client_nonce": "0102030405060708",
+      "description": "client greeting, server nonce zero",
+      "fields": {},
+      "flags": 0,
+      "header_hex": "444250310100004001020304050607080000000000000000000000006553f100e0ffffee64a0e2a5c3bae5e621c9a903af25e5904b6f2ec8df5303504a4a30b4",
+      "hmac_hex": "e0ffffee64a0e2a5c3bae5e621c9a903af25e5904b6f2ec8df5303504a4a30b4",
+      "message_name": "HELLO",
+      "message_type": 1,
+      "name": "hello",
+      "packet_hex": "444250310100004001020304050607080000000000000000000000006553f100e0ffffee64a0e2a5c3bae5e621c9a903af25e5904b6f2ec8df5303504a4a30b4",
+      "payload_hex": "",
+      "server_nonce": "0000000000000000",
+      "unix_time": 1700000000
+    },
+    {
+      "client_nonce": "0102030405060708",
+      "description": "server accepts; carries server nonce in header",
+      "fields": {},
+      "flags": 0,
+      "header_hex": "444250310200004001020304050607081112131415161718000000006553f1009f68a6b785eef7ffa3706b7fe791560512a12f83b87a3d9bb2276ffb1799af3a",
+      "hmac_hex": "9f68a6b785eef7ffa3706b7fe791560512a12f83b87a3d9bb2276ffb1799af3a",
+      "message_name": "HELLO_OK",
+      "message_type": 2,
+      "name": "hello_ok",
+      "packet_hex": "444250310200004001020304050607081112131415161718000000006553f1009f68a6b785eef7ffa3706b7fe791560512a12f83b87a3d9bb2276ffb1799af3a",
+      "payload_hex": "",
+      "server_nonce": "1112131415161718",
+      "unix_time": 1700000000
+    },
+    {
+      "client_nonce": "0102030405060708",
+      "description": "",
+      "fields": {
+        "address": "93.184.216.34",
+        "address_type": 1,
+        "port": 443
+      },
+      "flags": 0,
+      "header_hex": "444250311000004001020304050607081112131415161718000000006553f100f250ca6a9f1af482df743d99d7c65d157662750bf99d2380836e7e7fd3ba4718",
+      "hmac_hex": "f250ca6a9f1af482df743d99d7c65d157662750bf99d2380836e7e7fd3ba4718",
+      "message_name": "OPEN_TCP",
+      "message_type": 16,
+      "name": "open_ipv4_443",
+      "packet_hex": "444250311000004001020304050607081112131415161718000000006553f100f250ca6a9f1af482df743d99d7c65d157662750bf99d2380836e7e7fd3ba47180101bb045db8d822",
+      "payload_hex": "0101bb045db8d822",
+      "server_nonce": "1112131415161718",
+      "unix_time": 1700000000
+    },
+    {
+      "client_nonce": "0102030405060708",
+      "description": "",
+      "fields": {
+        "address_type": 3,
+        "domain": "example.com",
+        "port": 443
+      },
+      "flags": 0,
+      "header_hex": "444250311000004001020304050607081112131415161718000000006553f100ed74b54fe11117f47b225f569f9ae30549c4eeb48551949121cb48c7913e054b",
+      "hmac_hex": "ed74b54fe11117f47b225f569f9ae30549c4eeb48551949121cb48c7913e054b",
+      "message_name": "OPEN_TCP",
+      "message_type": 16,
+      "name": "open_domain_443",
+      "packet_hex": "444250311000004001020304050607081112131415161718000000006553f100ed74b54fe11117f47b225f569f9ae30549c4eeb48551949121cb48c7913e054b0301bb0b6578616d706c652e636f6d",
+      "payload_hex": "0301bb0b6578616d706c652e636f6d",
+      "server_nonce": "1112131415161718",
+      "unix_time": 1700000000
+    },
+    {
+      "client_nonce": "0102030405060708",
+      "description": "after this message the socket is a raw byte stream",
+      "fields": {},
+      "flags": 0,
+      "header_hex": "444250311100004001020304050607081112131415161718000000006553f100a4b385962f27bca2614c3847e4e8cc7d2eb5ac4b71a64dcb903cfb594b84810e",
+      "hmac_hex": "a4b385962f27bca2614c3847e4e8cc7d2eb5ac4b71a64dcb903cfb594b84810e",
+      "message_name": "OPEN_OK",
+      "message_type": 17,
+      "name": "open_ok",
+      "packet_hex": "444250311100004001020304050607081112131415161718000000006553f100a4b385962f27bca2614c3847e4e8cc7d2eb5ac4b71a64dcb903cfb594b84810e",
+      "payload_hex": "",
+      "server_nonce": "1112131415161718",
+      "unix_time": 1700000000
+    },
+    {
+      "client_nonce": "0102030405060708",
+      "description": "",
+      "fields": {
+        "error_code": 3,
+        "error_name": "POLICY_DENIED"
+      },
+      "flags": 0,
+      "header_hex": "444250311200004001020304050607081112131415161718000000006553f100caf6bf396fd990c8a062a7adbbef4ebf83931d7c5664710d1703ea92b6b472b3",
+      "hmac_hex": "caf6bf396fd990c8a062a7adbbef4ebf83931d7c5664710d1703ea92b6b472b3",
+      "message_name": "OPEN_ERROR",
+      "message_type": 18,
+      "name": "open_error_policy_denied",
+      "packet_hex": "444250311200004001020304050607081112131415161718000000006553f100caf6bf396fd990c8a062a7adbbef4ebf83931d7c5664710d1703ea92b6b472b303",
+      "payload_hex": "03",
+      "server_nonce": "1112131415161718",
+      "unix_time": 1700000000
+    },
+    {
+      "client_nonce": "0102030405060708",
+      "description": "",
+      "fields": {
+        "dns_packet_hex": "123401000001000000000000076578616d706c6503636f6d0000010001",
+        "name": "example.com",
+        "qtype": 1,
+        "transaction_id": 4660
+      },
+      "flags": 0,
+      "header_hex": "444250312000004001020304050607081112131415161718000000006553f100c8aac29cd20dde469d5105d9020ff187c36c6dda1755ea4e8b800f5a62d54ae3",
+      "hmac_hex": "c8aac29cd20dde469d5105d9020ff187c36c6dda1755ea4e8b800f5a62d54ae3",
+      "message_name": "DNS_QUERY",
+      "message_type": 32,
+      "name": "dns_query",
+      "packet_hex": "444250312000004001020304050607081112131415161718000000006553f100c8aac29cd20dde469d5105d9020ff187c36c6dda1755ea4e8b800f5a62d54ae3001d123401000001000000000000076578616d706c6503636f6d0000010001",
+      "payload_hex": "001d123401000001000000000000076578616d706c6503636f6d0000010001",
+      "server_nonce": "1112131415161718",
+      "unix_time": 1700000000
+    },
+    {
+      "client_nonce": "0102030405060708",
+      "description": "",
+      "fields": {
+        "answer": "93.184.216.34",
+        "dns_packet_hex": "123481800001000100000000076578616d706c6503636f6d0000010001c00c000100010000012c00045db8d822",
+        "name": "example.com",
+        "transaction_id": 4660,
+        "ttl": 300
+      },
+      "flags": 0,
+      "header_hex": "444250312100004001020304050607081112131415161718000000006553f10039a8b04cf4b081ab7e4c826d64c43c5869bcc2e28045fa75b73b73bc234e8095",
+      "hmac_hex": "39a8b04cf4b081ab7e4c826d64c43c5869bcc2e28045fa75b73b73bc234e8095",
+      "message_name": "DNS_RESPONSE",
+      "message_type": 33,
+      "name": "dns_response",
+      "packet_hex": "444250312100004001020304050607081112131415161718000000006553f10039a8b04cf4b081ab7e4c826d64c43c5869bcc2e28045fa75b73b73bc234e8095002d123481800001000100000000076578616d706c6503636f6d0000010001c00c000100010000012c00045db8d822",
+      "payload_hex": "002d123481800001000100000000076578616d706c6503636f6d0000010001c00c000100010000012c00045db8d822",
+      "server_nonce": "1112131415161718",
+      "unix_time": 1700000000
+    },
+    {
+      "client_nonce": "0102030405060708",
+      "description": "",
+      "fields": {},
+      "flags": 0,
+      "header_hex": "444250313000004001020304050607081112131415161718000000006553f10018f7c7186f7b051ba7127c5aa4a704a207fbdfbf9b2ae8e98a799a19066d79b8",
+      "hmac_hex": "18f7c7186f7b051ba7127c5aa4a704a207fbdfbf9b2ae8e98a799a19066d79b8",
+      "message_name": "HEALTH",
+      "message_type": 48,
+      "name": "health",
+      "packet_hex": "444250313000004001020304050607081112131415161718000000006553f10018f7c7186f7b051ba7127c5aa4a704a207fbdfbf9b2ae8e98a799a19066d79b8",
+      "payload_hex": "",
+      "server_nonce": "1112131415161718",
+      "unix_time": 1700000000
+    },
+    {
+      "client_nonce": "0102030405060708",
+      "description": "",
+      "fields": {
+        "active_sessions": 3,
+        "carrier_name": "TestCarrier",
+        "downloaded_bytes": 8388608,
+        "maximum_sessions": 128,
+        "status": 1,
+        "status_name": "READY",
+        "uploaded_bytes": 1048576
+      },
+      "flags": 0,
+      "header_hex": "444250313100004001020304050607081112131415161718000000006553f100b67ced2b2e15dd4fbdcebc0b3d638204198afc23589f2aa75d62e84d9493ef73",
+      "hmac_hex": "b67ced2b2e15dd4fbdcebc0b3d638204198afc23589f2aa75d62e84d9493ef73",
+      "message_name": "HEALTH_RESPONSE",
+      "message_type": 49,
+      "name": "health_response_ready",
+      "packet_hex": "444250313100004001020304050607081112131415161718000000006553f100b67ced2b2e15dd4fbdcebc0b3d638204198afc23589f2aa75d62e84d9493ef730100030080000000000010000000000000008000000b5465737443617272696572",
+      "payload_hex": "0100030080000000000010000000000000008000000b5465737443617272696572",
+      "server_nonce": "1112131415161718",
+      "unix_time": 1700000000
+    }
+  ]
+}
