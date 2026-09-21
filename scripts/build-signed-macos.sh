@@ -11,7 +11,7 @@ team="${DROIDBRIDGE_DEVELOPMENT_TEAM:-}"
 dd="$here/build/DerivedData"
 xcodegen generate
 xcodebuild -project DroidBridge.xcodeproj -scheme DroidBridgeHost -configuration Release \
-  -derivedDataPath "$dd" \
+  -derivedDataPath "$dd" -allowProvisioningUpdates \
   DEVELOPMENT_TEAM="$team" CODE_SIGN_STYLE=Automatic build
 
 app="$dd/Build/Products/Release/DroidBridge.app"
