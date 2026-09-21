@@ -22,7 +22,7 @@ coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-
 junit4 = { group = "junit", name = "junit", version.ref = "junit4" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 androidx-test-core = { group = "androidx.test", name = "core-ktx", version.ref = "androidx-test-core" }
-kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
+kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test-junit", version.ref = "kotlin" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
