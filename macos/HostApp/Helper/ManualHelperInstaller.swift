@@ -1,0 +1,131 @@
+import DroidBridgeShared
+import Foundation
+import Security
+
+enum ManualHelperInstallerError: LocalizedError {
+    case missingEmbeddedFile(String)
+    case invalidLaunchDaemonPlist
+    case invalidHelperSignature(OSStatus)
+    case authorizationFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .missingEmbeddedFile(path):
+            return "the signed app is missing \(path)"
+        case .invalidLaunchDaemonPlist:
+            return "the embedded launch daemon plist is invalid"
+        case let .invalidHelperSignature(status):
+            return "the embedded helper failed code-signature validation (\(status))"
+        case let .authorizationFailed(message):
+            return "administrator-authorized helper installation failed: \(message)"
+        }
+    }
+}
+
+/// Installs the free-certificate helper after an explicit macOS administrator prompt.
+struct ManualHelperInstaller: Sendable {
+    private static let relativeDirectory = "Contents/Library/LaunchDaemons"
+    private static let helperName = "DroidBridgeHelper"
+    private static let plistName = "io.droidbridge.helper.plist"
+
+    private let bundleURL: URL
+    private let runner: any ProcessRunning
+    private let helperRequirement: String
+
+    init(
+        bundleURL: URL = Bundle.main.bundleURL,
+        runner: any ProcessRunning = FoundationProcessRunner(),
+        teamID: String = "ABCDE12345"
+    ) {
+        self.bundleURL = bundleURL
+        self.runner = runner
+        helperRequirement = HelperCodeRequirement.string(
+            teamID: teamID,
+            bundleID: "io.droidbridge.helper"
+        )
+    }
+
+    func install() async throws {
+        let embeddedDirectory = bundleURL.appendingPathComponent(Self.relativeDirectory)
+        let helperURL = embeddedDirectory.appendingPathComponent(Self.helperName)
+        let plistURL = embeddedDirectory.appendingPathComponent(Self.plistName)
+        guard FileManager.default.isExecutableFile(atPath: helperURL.path) else {
+            throw ManualHelperInstallerError.missingEmbeddedFile(helperURL.path)
+        }
+        guard FileManager.default.fileExists(atPath: plistURL.path) else {
+            throw ManualHelperInstallerError.missingEmbeddedFile(plistURL.path)
+        }
+
+        try validateHelper(at: helperURL)
+        try validatePlist(at: plistURL)
+
+        let result = try await runner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/osascript"),
+            arguments: [
+                "-e", Self.appleScript,
+                "--", helperURL.path, plistURL.path, helperRequirement,
+            ],
+            environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+        )
+        guard result.exitCode == 0 else {
+            let message = result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw ManualHelperInstallerError.authorizationFailed(
+                message.isEmpty ? "osascript exited with status \(result.exitCode)" : message
+            )
+        }
+    }
+
+    private func validateHelper(at url: URL) throws {
+        var staticCode: SecStaticCode?
+        var status = SecStaticCodeCreateWithPath(url as CFURL, [], &staticCode)
+        guard status == errSecSuccess, let staticCode else {
+            throw ManualHelperInstallerError.invalidHelperSignature(status)
+        }
+        var requirement: SecRequirement?
+        status = SecRequirementCreateWithString(helperRequirement as CFString, [], &requirement)
+        guard status == errSecSuccess, let requirement else {
+            throw ManualHelperInstallerError.invalidHelperSignature(status)
+        }
+        let validationFlags = SecCSFlags(rawValue: (1 << 0) | (1 << 4))
+        status = SecStaticCodeCheckValidity(staticCode, validationFlags, requirement)
+        guard status == errSecSuccess else {
+            throw ManualHelperInstallerError.invalidHelperSignature(status)
+        }
+    }
+
+    private func validatePlist(at url: URL) throws {
+        let data = try Data(contentsOf: url)
+        guard let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              plist["Label"] as? String == HelperCodeRequirement.machServiceName,
+              let arguments = plist["ProgramArguments"] as? [String],
+              arguments.first == "/Library/PrivilegedHelperTools/io.droidbridge.helper"
+        else {
+            throw ManualHelperInstallerError.invalidLaunchDaemonPlist
+        }
+    }
+
+    private static let appleScript = #"""
+on run argv
+    if (count of argv) is not 3 then error "invalid installer arguments"
+    set helperSource to item 1 of argv
+    set plistSource to item 2 of argv
+    set helperRequirement to item 3 of argv
+    set helperDestination to "/Library/PrivilegedHelperTools/io.droidbridge.helper"
+    set plistDestination to "/Library/LaunchDaemons/io.droidbridge.helper.plist"
+    set helperStage to helperDestination & ".new"
+    set plistStage to plistDestination & ".new"
+    set requirementArgument to "-R=" & helperRequirement
+
+    set commandText to "/bin/rm -f " & quoted form of helperStage & " " & quoted form of plistStage
+    set commandText to commandText & " && /usr/bin/install -o root -g wheel -m 0755 " & quoted form of helperSource & " " & quoted form of helperStage
+    set commandText to commandText & " && /usr/bin/codesign --verify --strict " & quoted form of requirementArgument & " " & quoted form of helperStage
+    set commandText to commandText & " && /usr/bin/install -o root -g wheel -m 0644 " & quoted form of plistSource & " " & quoted form of plistStage
+    set commandText to commandText & " && /usr/bin/plutil -lint " & quoted form of plistStage & " >/dev/null"
+    set commandText to commandText & " && /bin/mv -f " & quoted form of helperStage & " " & quoted form of helperDestination
+    set commandText to commandText & " && /bin/mv -f " & quoted form of plistStage & " " & quoted form of plistDestination
+    set commandText to commandText & " && (/bin/launchctl bootout system/io.droidbridge.helper >/dev/null 2>&1 || true)"
+    set commandText to commandText & " && /bin/launchctl bootstrap system " & quoted form of plistDestination
+    do shell script commandText with administrator privileges
+end run
+"""#
+}

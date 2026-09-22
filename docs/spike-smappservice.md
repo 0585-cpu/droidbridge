@@ -31,6 +31,10 @@ explicit administrator-authorized copy to
 `/Library/PrivilegedHelperTools/io.droidbridge.helper`, install the launchd plist in
 `/Library/LaunchDaemons`, and bootstrap it only after showing the user exactly what will
 change. It must surface copy/bootstrap errors verbatim and must never install silently.
+The implemented path uses the standard macOS administrator authentication dialog via
+`osascript`; the embedded helper is validated against its bundle/team requirement both
+before authorization and again from the root-owned staging path. The Host app is
+therefore distributed outside the App Sandbox.
 
 ## Runtime validation procedure
 

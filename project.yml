@@ -56,10 +56,21 @@ targets:
   DroidBridgeHost:
     type: application
     platform: macOS
-    sources: [macos/HostApp]
+    sources:
+      - macos/HostApp
+      - path: macos/Helper/io.droidbridge.helper.plist
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Library/LaunchDaemons
     dependencies:
       - package: DroidBridgeShared
       - target: DroidBridgePacketTunnel
+      - target: DroidBridgeHelper
+        embed: true
+        copy:
+          destination: wrapper
+          subpath: Contents/Library/LaunchDaemons
     info:
       path: macos/HostApp/Resources/Info.plist
       properties:
