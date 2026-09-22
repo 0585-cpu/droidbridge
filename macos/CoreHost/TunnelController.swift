@@ -1,60 +1,83 @@
 import DroidBridgeCore
 import Foundation
-import NetworkExtension
 import DroidBridgeShared
 
 /// Assembles the B1 data plane: reads packets from the tunnel into the C engine, opens one relay
 /// connection per TCP flow, bridges bytes both ways, and answers virtual DNS through the relay.
 final class TunnelController: NSObject, EngineBridgeDelegate, RelayFlowDelegate, @unchecked Sendable {
-    private let packetFlow: NEPacketTunnelFlow
+    private let packetSource: PacketSource
     private let secret: Data
     private let relayHost: String
     private let relayPort: UInt16
+    private let engineFactory: (EngineBridgeDelegate) -> PacketIngesting?
 
-    private var engine: EngineBridge?
+    private var packetIngester: PacketIngesting?
+    private var engineBridge: EngineBridge?
+    private let lifecycleLock = NSLock()
+    private var isRunning = false
     private let flowsLock = NSLock()
     private var flows: [UInt32: RelayFlowConnection] = [:]
     private let dnsClient: RelayDNSClient
 
-    init(packetFlow: NEPacketTunnelFlow, secret: Data, relayHost: String = "127.0.0.1", relayPort: UInt16 = 27183) {
-        self.packetFlow = packetFlow
+    init(
+        packetSource: PacketSource,
+        secret: Data,
+        relayHost: String = "127.0.0.1",
+        relayPort: UInt16 = 27183,
+        engineFactory: @escaping (EngineBridgeDelegate) -> PacketIngesting? = { EngineBridge(delegate: $0) }
+    ) {
+        self.packetSource = packetSource
         self.secret = secret
         self.relayHost = relayHost
         self.relayPort = relayPort
+        self.engineFactory = engineFactory
         let host = relayHost, port = relayPort
         self.dnsClient = RelayDNSClient(secret: secret, transportFactory: { NWConnectionTransport(host: host, port: port) })
         super.init()
     }
 
     func start() {
-        engine = EngineBridge(delegate: self)
+        guard lifecycleLock.withLock({
+            guard !isRunning else { return false }
+            isRunning = true
+            return true
+        }) else { return }
+
+        let engine = engineFactory(self)
+        packetIngester = engine
+        engineBridge = engine as? EngineBridge
+        guard engine != nil else {
+            lifecycleLock.withLock { isRunning = false }
+            return
+        }
         readPackets()
     }
 
     func stop() {
+        lifecycleLock.withLock { isRunning = false }
         flowsLock.withLock { flows.values.forEach { conn in Task { await conn.close() } }; flows.removeAll() }
-        engine = nil
+        packetIngester = nil
+        engineBridge = nil
     }
 
-    var activeFlowCount: Int { engine?.activeFlows ?? 0 }
+    var activeFlowCount: Int { engineBridge?.activeFlows ?? 0 }
 
     // MARK: - packet read loop
 
     private func readPackets() {
-        packetFlow.readPackets { [weak self] packets, protocols in
-            guard let self else { return }
+        guard lifecycleLock.withLock({ isRunning }) else { return }
+        packetSource.read { [weak self] packets in
+            guard let self, self.lifecycleLock.withLock({ self.isRunning }) else { return }
             // schedule the next read before processing, to avoid receive stalls
             self.readPackets()
-            for (packet, proto) in zip(packets, protocols) where proto.int32Value == AF_INET {
-                self.engine?.ingest(packet)
-            }
+            for packet in packets { self.packetIngester?.ingest(packet) }
         }
     }
 
     // MARK: - EngineBridgeDelegate (called on the engine queue)
 
     func engineEmitPacket(_ data: Data) {
-        packetFlow.writePackets([data], withProtocols: [NSNumber(value: AF_INET)])
+        packetSource.write([data])
     }
 
     func engineOpenFlow(_ flow: UInt32, dstIP: [UInt8], port: UInt16) {
@@ -65,7 +88,7 @@ final class TunnelController: NSObject, EngineBridgeDelegate, RelayFlowDelegate,
         flowsLock.withLock { flows[flow] = conn }
         Task {
             do { try await conn.start() }
-            catch { self.engine?.relayOpenFailed(flow) }
+            catch { self.engineBridge?.relayOpenFailed(flow) }
         }
     }
 
@@ -83,19 +106,19 @@ final class TunnelController: NSObject, EngineBridgeDelegate, RelayFlowDelegate,
     func engineSendDNS(_ flow: UInt32, _ query: Data) {
         Task {
             if let response = try? await dnsClient.query(query) {
-                engine?.dnsResponse(flow, response)
+                engineBridge?.dnsResponse(flow, response)
             }
         }
     }
 
     // MARK: - RelayFlowDelegate (from RelayFlowConnection)
 
-    func relayFlowOpened(_ flowId: UInt32) { engine?.relayOpened(flowId) }
-    func relayFlowFailed(_ flowId: UInt32, error: DbpErrorCode) { engine?.relayOpenFailed(flowId) }
-    func relayFlowReceived(_ flowId: UInt32, data: Data) { engine?.relayData(flowId, data) }
-    func relayFlowWritable(_ flowId: UInt32) { engine?.relayWritable(flowId) }
+    func relayFlowOpened(_ flowId: UInt32) { engineBridge?.relayOpened(flowId) }
+    func relayFlowFailed(_ flowId: UInt32, error: DbpErrorCode) { engineBridge?.relayOpenFailed(flowId) }
+    func relayFlowReceived(_ flowId: UInt32, data: Data) { engineBridge?.relayData(flowId, data) }
+    func relayFlowWritable(_ flowId: UInt32) { engineBridge?.relayWritable(flowId) }
     func relayFlowClosed(_ flowId: UInt32, isError: Bool) {
-        engine?.relayClosed(flowId, isError: isError)
+        engineBridge?.relayClosed(flowId, isError: isError)
         _ = flowsLock.withLock { flows.removeValue(forKey: flowId) }
     }
 }

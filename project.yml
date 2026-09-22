@@ -64,7 +64,9 @@ targets:
   DroidBridgePacketTunnel:
     type: app-extension
     platform: macOS
-    sources: [macos/PacketTunnel]
+    sources:
+      - macos/PacketTunnel
+      - macos/CoreHost
     dependencies:
       - package: DroidBridgeShared
       - target: DroidBridgeCore

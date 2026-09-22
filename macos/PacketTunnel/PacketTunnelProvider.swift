@@ -25,7 +25,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         setTunnelNetworkSettings(settings) { [weak self] error in
             guard let self else { return }
             if let error { completionHandler(error); return }
-            let controller = TunnelController(packetFlow: self.packetFlow, secret: secret,
+            let controller = TunnelController(packetSource: NEPacketFlowSource(self.packetFlow), secret: secret,
                                               relayHost: config.relayHost, relayPort: config.relayPort)
             controller.start()
             self.controller = controller

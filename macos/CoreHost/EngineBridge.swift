@@ -1,4 +1,5 @@
 import DroidBridgeCore
+import DroidBridgeShared
 import Foundation
 
 /// Effects the C engine raises. All bytes are already copied into Data; delegates run on the engine queue.
@@ -71,3 +72,5 @@ final class EngineBridge {
 
     var activeFlows: Int { queue.sync { [engine] in db_engine_active_flow_count(engine) } }
 }
+
+extension EngineBridge: PacketIngesting {}
