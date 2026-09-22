@@ -130,7 +130,13 @@ final class TunnelController: NSObject, EngineBridgeDelegate, RelayFlowDelegate,
     // MARK: - RelayFlowDelegate (from RelayFlowConnection)
 
     func relayFlowOpened(_ flowId: UInt32) { engineBridge?.relayOpened(flowId) }
-    func relayFlowFailed(_ flowId: UInt32, error: DbpErrorCode) { engineBridge?.relayOpenFailed(flowId) }
+    /// The relay's refusal reason is the only signal that distinguishes a policy
+    /// denial from cellular loss, a slot leak, or an unreachable destination, so
+    /// it is logged rather than discarded.
+    func relayFlowFailed(_ flowId: UInt32, error: DbpErrorCode) {
+        NSLog("DroidBridge flow %u refused by relay: %@", flowId, String(describing: error))
+        engineBridge?.relayOpenFailed(flowId)
+    }
     func relayFlowReceived(_ flowId: UInt32, data: Data) { engineBridge?.relayData(flowId, data) }
     func relayFlowWritable(_ flowId: UInt32) { engineBridge?.relayWritable(flowId) }
     func relayFlowClosed(_ flowId: UInt32, isError: Bool) {
