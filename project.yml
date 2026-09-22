@@ -7,6 +7,22 @@ packages:
   DroidBridgeShared:
     path: macos/Shared
 targets:
+  DroidBridgeHelper:
+    type: tool
+    platform: macOS
+    sources:
+      - path: macos/Helper
+        excludes:
+          - Info.plist
+          - Helper.entitlements
+          - io.droidbridge.helper.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.droidbridge.helper
+        CODE_SIGN_ENTITLEMENTS: macos/Helper/Helper.entitlements
+        INFOPLIST_FILE: macos/Helper/Info.plist
+        MARKETING_VERSION: "0.1.0"
+        SWIFT_VERSION: "6.0"
   DroidBridgeCore:
     type: library.static
     platform: macOS
