@@ -19,6 +19,7 @@ import java.net.InetAddress
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -192,6 +193,73 @@ class RelayServerTest {
                     assertEquals(DbpMessageType.OPEN_ERROR, h2.type)
                     assertEquals(DbpErrorCode.SESSION_LIMIT.code, p2[0].toInt())
                     c1.close(); c2.close()
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `completed flow releases its slot for the next connection`() {
+        val backend = object : RelayBackend {
+            override suspend fun connect(destination: OpenDestination): Socket = FakeDuplexSocket(ByteArray(0))
+            override suspend fun resolveDns(queryPacket: ByteArray): ByteArray = error("unused")
+            override fun carrierName(): String? = "MockCarrier"
+            override fun cellularReady(): Boolean = true
+        }
+        runBlocking {
+            withTimeout(10.seconds) {
+                start(backend, maxFlows = 1)
+                withContext(Dispatchers.IO) {
+                    val first = DbpTestClient(server.port, nonce = 101)
+                    first.hello()
+                    val (opened, _) = first.request(
+                        DbpMessageType.OPEN_TCP,
+                        DbpCodec.encodeOpenTcp(OpenDestination.Domain("example.com", 443)),
+                    )
+                    assertEquals(DbpMessageType.OPEN_OK, opened.type)
+                    server.metrics.snapshot.first { it.activeFlows == 1 }
+                    first.close()
+                    server.metrics.snapshot.first { it.activeFlows == 0 }
+
+                    DbpTestClient(server.port, nonce = 102).use { second ->
+                        second.hello()
+                        val (reopened, _) = second.request(
+                            DbpMessageType.OPEN_TCP,
+                            DbpCodec.encodeOpenTcp(OpenDestination.Domain("example.com", 443)),
+                        )
+                        assertEquals(DbpMessageType.OPEN_OK, reopened.type)
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `cancelling active flows closes their client sockets`() {
+        val backend = object : RelayBackend {
+            override suspend fun connect(destination: OpenDestination): Socket = FakeDuplexSocket(ByteArray(0))
+            override suspend fun resolveDns(queryPacket: ByteArray): ByteArray = error("unused")
+            override fun carrierName(): String? = "MockCarrier"
+            override fun cellularReady(): Boolean = true
+        }
+        runBlocking {
+            withTimeout(10.seconds) {
+                start(backend, maxFlows = 1)
+                withContext(Dispatchers.IO) {
+                    val client = DbpTestClient(server.port, nonce = 103)
+                    client.hello()
+                    val (opened, _) = client.request(
+                        DbpMessageType.OPEN_TCP,
+                        DbpCodec.encodeOpenTcp(OpenDestination.Domain("example.com", 443)),
+                    )
+                    assertEquals(DbpMessageType.OPEN_OK, opened.type)
+                    server.metrics.snapshot.first { it.activeFlows == 1 }
+
+                    server.cancelActiveFlows()
+
+                    assertContentEquals(ByteArray(0), client.readAll())
+                    server.metrics.snapshot.first { it.activeFlows == 0 }
+                    client.close()
                 }
             }
         }

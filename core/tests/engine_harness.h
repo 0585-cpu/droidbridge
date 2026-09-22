@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include "droidbridge_core.h"
 
-#define HARNESS_MAX_EMIT 64
+#define HARNESS_MAX_EMIT 128
 #define HARNESS_BUF 4096
 
 typedef struct { uint8_t bytes[2048]; size_t len; } emitted_packet_t;

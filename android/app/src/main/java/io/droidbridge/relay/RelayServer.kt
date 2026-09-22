@@ -21,6 +21,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -57,6 +58,7 @@ class RelayServer(
 
     private val connectionSlots = Semaphore(256) // caps unauthenticated sockets too
     private val flowSlots = Semaphore(maximumFlows)
+    private val activeFlowSockets = ConcurrentHashMap.newKeySet<Socket>()
     private var serverSocket: ServerSocket? = null
     private var scope: CoroutineScope? = null
 
@@ -85,10 +87,16 @@ class RelayServer(
     }
 
     fun stop() {
+        cancelActiveFlows()
         scope?.cancel()
         runCatching { serverSocket?.close() }
         serverSocket = null
         scope = null
+    }
+
+    /** Immediately tears down established bridges while leaving the authenticated listener available. */
+    fun cancelActiveFlows() {
+        activeFlowSockets.toList().forEach { socket -> runCatching { socket.close() } }
     }
 
     private suspend fun handleConnection(client: Socket) {
@@ -164,16 +172,23 @@ class RelayServer(
             writeFrame(output, session.sign(DbpMessageType.OPEN_ERROR, DbpCodec.encodeError(DbpErrorCode.CONNECT_TIMEOUT)))
             return
         }
-        writeFrame(output, session.sign(DbpMessageType.OPEN_OK, ByteArray(0)))
-        metrics.flowOpened()
+        activeFlowSockets += client
+        activeFlowSockets += remote
+        var opened = false
         try {
+            writeFrame(output, session.sign(DbpMessageType.OPEN_OK, ByteArray(0)))
+            metrics.flowOpened()
+            opened = true
             // after OPEN_OK the client socket is a raw byte stream
             val clientEnd = BridgeEnd("client", client.getInputStream(), output, { runCatching { client.shutdownOutput() } })
             val remoteEnd = BridgeEnd("remote", remote.getInputStream(), remote.getOutputStream(), { runCatching { remote.shutdownOutput() } })
             val (up, down) = bridge.copyBidirectional(clientEnd, remoteEnd)
             metrics.addTransfer(up, down)
         } finally {
-            metrics.flowClosed()
+            activeFlowSockets -= client
+            activeFlowSockets -= remote
+            if (opened) metrics.flowClosed()
+            flowSlots.release()
             runCatching { remote.close() }
         }
     }

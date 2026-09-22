@@ -59,7 +59,7 @@ class CellularNetworkController(private val facade: ConnectivityFacade) : Cellul
     }
 
     override fun onLost(network: NetworkHandle) {
-        if (this.network === network || this.network == null) {
+        if (this.network == network || this.network == null) {
             this.network = null
             generation++
             _state.value = CellularState.Lost

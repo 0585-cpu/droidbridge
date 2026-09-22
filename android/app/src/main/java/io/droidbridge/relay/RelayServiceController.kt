@@ -42,6 +42,7 @@ class RelayServiceController(
     override val metrics = server.metrics.snapshot
 
     init {
+        controller.addLossListener(server::cancelActiveFlows)
         scope.launch {
             controller.state.collect { cellular ->
                 _state.value = when (cellular) {
@@ -55,7 +56,6 @@ class RelayServiceController(
 
     override fun start() {
         _state.value = _state.value.onStartRequested()
-        controller.addLossListener { server.metrics } // flows are cancelled inside the server's bridges
         controller.start()
         server.start()
     }

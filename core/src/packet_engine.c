@@ -31,6 +31,8 @@ typedef struct {
     uint8_t *mac_buffer;      /* Mac data awaiting relay open or relay backpressure */
     size_t mac_buffer_len;
     size_t relay_queued;      /* bytes currently in lwIP sndbuf for this flow */
+    uint8_t *relay_buffer;    /* relay data waiting for space in the lwIP send buffer */
+    size_t relay_buffer_len;
 } flow_t;
 
 struct db_engine {
@@ -75,6 +77,7 @@ static void free_flow(flow_t *f) {
     }
     if (f->listen_pcb) { tcp_close(f->listen_pcb); f->listen_pcb = NULL; }
     free(f->mac_buffer);
+    free(f->relay_buffer);
     db_flow_table_remove(e->flow_table, &f->mapping.original);
     if (e->active > 0) e->active--;
     memset(f, 0, sizeof *f);
@@ -120,6 +123,36 @@ static int buffer_mac_data(flow_t *f, const uint8_t *data, size_t len) {
     return 0;
 }
 
+static int buffer_relay_data(flow_t *f, const uint8_t *data, size_t len) {
+    if (len > DB_RELAY_QUEUE_MAX - f->relay_queued - f->relay_buffer_len) return -1;
+    uint8_t *grown = realloc(f->relay_buffer, f->relay_buffer_len + len);
+    if (grown == NULL) return -1;
+    f->relay_buffer = grown;
+    memcpy(f->relay_buffer + f->relay_buffer_len, data, len);
+    f->relay_buffer_len += len;
+    return 0;
+}
+
+static int drain_relay_buffer(flow_t *f) {
+    while (f->conn_pcb && f->relay_buffer_len > 0) {
+        u16_t sndbuf = tcp_sndbuf(f->conn_pcb);
+        if (sndbuf == 0 || f->relay_queued >= DB_RELAY_QUEUE_MAX) break;
+        size_t chunk = f->relay_buffer_len;
+        if (chunk > sndbuf) chunk = sndbuf;
+        if (chunk > DB_RELAY_QUEUE_MAX - f->relay_queued) chunk = DB_RELAY_QUEUE_MAX - f->relay_queued;
+        if (chunk == 0) break;
+        if (tcp_write(f->conn_pcb, f->relay_buffer, (u16_t)chunk, TCP_WRITE_FLAG_COPY) != ERR_OK) break;
+        memmove(f->relay_buffer, f->relay_buffer + chunk, f->relay_buffer_len - chunk);
+        f->relay_buffer_len -= chunk;
+        f->relay_queued += chunk;
+    }
+    if (f->relay_buffer_len == 0) {
+        free(f->relay_buffer);
+        f->relay_buffer = NULL;
+    }
+    return f->conn_pcb ? tcp_output(f->conn_pcb) : ERR_CONN;
+}
+
 /* ---- lwIP pcb callbacks ---- */
 
 static void lwip_err_cb(void *arg, err_t err) {
@@ -138,6 +171,11 @@ static err_t lwip_sent_cb(void *arg, struct tcp_pcb *pcb, u16_t len) {
     flow_t *f = arg;
     if (f == NULL) return ERR_OK;
     f->relay_queued = (f->relay_queued >= len) ? f->relay_queued - len : 0;
+    if (drain_relay_buffer(f) != ERR_OK) {
+        f->engine->config.close_flow(f->engine->config.context, f->id, DB_CLOSE_RESET);
+        free_flow(f);
+        return ERR_ABRT;
+    }
     return ERR_OK;
 }
 
@@ -380,19 +418,16 @@ db_engine_status_t db_engine_on_relay_data(db_engine_t *e, db_flow_id_t flow, co
     if (e == NULL || data == NULL) return DB_ENGINE_ERR_ARGUMENT;
     flow_t *f = flow_by_id(e, flow);
     if (f == NULL || f->conn_pcb == NULL) return DB_ENGINE_ERR_UNKNOWN_FLOW;
-    size_t offset = 0;
-    while (offset < length) {
-        u16_t sndbuf = tcp_sndbuf(f->conn_pcb);
-        if (sndbuf == 0) break; /* backpressure: remaining bytes dropped for B1 test scope */
-        size_t chunk = length - offset;
-        if (chunk > sndbuf) chunk = sndbuf;
-        if (f->relay_queued + chunk > DB_RELAY_QUEUE_MAX) chunk = DB_RELAY_QUEUE_MAX - f->relay_queued;
-        if (chunk == 0) break;
-        if (tcp_write(f->conn_pcb, data + offset, (u16_t)chunk, TCP_WRITE_FLAG_COPY) != ERR_OK) break;
-        f->relay_queued += chunk;
-        offset += chunk;
+    if (buffer_relay_data(f, data, length) != 0) {
+        e->config.close_flow(e->config.context, f->id, DB_CLOSE_LIMIT);
+        free_flow(f);
+        return DB_ENGINE_ERR_STATE;
     }
-    tcp_output(f->conn_pcb);
+    if (drain_relay_buffer(f) != ERR_OK) {
+        e->config.close_flow(e->config.context, f->id, DB_CLOSE_RESET);
+        free_flow(f);
+        return DB_ENGINE_ERR_STATE;
+    }
     return DB_ENGINE_OK;
 }
 
@@ -418,6 +453,7 @@ db_engine_status_t db_engine_on_relay_closed(db_engine_t *e, db_flow_id_t flow, 
         tcp_close(f->conn_pcb); /* FIN */
         f->conn_pcb = NULL;
         free(f->mac_buffer);
+        free(f->relay_buffer);
         db_flow_table_remove(e->flow_table, &f->mapping.original);
         if (e->active > 0) e->active--;
         memset(f, 0, sizeof *f);

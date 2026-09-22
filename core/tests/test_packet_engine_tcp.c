@@ -7,6 +7,21 @@
 
 #define REMOTE "93.184.216.34"
 
+static size_t emitted_payload_bytes(const harness_t *h, uint32_t *last_ack) {
+    size_t total = 0;
+    uint32_t furthest = 0;
+    for (int i = 0; i < h->emitted_count; i++) {
+        db_ipv4_view_t ip; db_tcp_view_t tcp;
+        if (db_ipv4_parse(h->emitted[i].bytes, h->emitted[i].len, &ip) != DB_PACKET_OK) continue;
+        if (db_tcp_parse(h->emitted[i].bytes, h->emitted[i].len, &ip, &tcp) != DB_PACKET_OK) continue;
+        total += tcp.payload_length;
+        if (tcp.payload_length > 0 && tcp.seq + tcp.payload_length > furthest)
+            furthest = tcp.seq + (uint32_t)tcp.payload_length;
+    }
+    if (last_ack) *last_ack = furthest;
+    return total;
+}
+
 static void check_src(const emitted_packet_t *pkt, const char *ip, uint16_t port) {
     db_ipv4_view_t v; db_tcp_view_t t;
     ASSERT_EQ_INT(DB_PACKET_OK, db_ipv4_parse(pkt->bytes, pkt->len, &v));
@@ -99,9 +114,42 @@ static void test_mac_fin_half_closes(void) {
     harness_destroy(&h);
 }
 
+static void test_relay_bytes_wait_for_lwip_send_space_instead_of_dropping(void) {
+    harness_t h; harness_create(&h, 128);
+    harness_ingest_syn(&h, 40003, REMOTE, 443);
+    harness_take_synack(&h, NULL);
+    harness_ingest_ack(&h, REMOTE, 443);
+    db_engine_on_relay_opened(h.engine, h.last_flow);
+    harness_clear_emitted(&h);
+
+    uint8_t response[48 * 1024];
+    for (size_t i = 0; i < sizeof response; i++) response[i] = (uint8_t)(i & 0xff);
+    ASSERT_EQ_INT(DB_ENGINE_OK, db_engine_on_relay_data(h.engine, h.last_flow, response, sizeof response));
+
+    uint32_t relay_ack = 0;
+    size_t first_batch = emitted_payload_bytes(&h, &relay_ack);
+    ASSERT_TRUE(first_batch > 0);
+    ASSERT_TRUE(first_batch < sizeof response);
+
+    size_t delivered = first_batch;
+    for (int attempt = 0; attempt < 16 && delivered < sizeof response; attempt++) {
+        uint8_t ack[64];
+        size_t n = build_tcp_packet_full(ack, sizeof ack, "198.18.0.2", 40003, REMOTE, 443,
+                                         DB_TCP_ACK, h.mac_seq, relay_ack, NULL, 0);
+        db_engine_input_packet(h.engine, ack, n);
+        size_t next = emitted_payload_bytes(&h, &relay_ack);
+        if (next == delivered) break;
+        delivered = next;
+    }
+
+    ASSERT_EQ_INT((int)sizeof response, (int)delivered);
+    harness_destroy(&h);
+}
+
 void run_packet_engine_tcp_tests(void) {
     RUN(test_tcp_stream_opens_relay_and_returns_remote_bytes);
     RUN(test_relay_open_failure_resets);
     RUN(test_data_before_open_is_buffered_then_flushed);
     RUN(test_mac_fin_half_closes);
+    RUN(test_relay_bytes_wait_for_lwip_send_space_instead_of_dropping);
 }

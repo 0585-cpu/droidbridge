@@ -15,7 +15,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
-private class FakeNetwork(val name: String) : NetworkHandle
+private data class FakeNetwork(val name: String) : NetworkHandle
 
 private class FakeSocket(val network: FakeNetwork) : Socket() {
     var connectedAddress: InetAddress? = null
@@ -88,6 +88,23 @@ class CellularNetworkControllerTest {
         assertFailsWith<CellularUnavailableException> {
             controller.connectTcp(OpenDestination.Ipv4(byteArrayOf(93, 184.toByte(), 216.toByte(), 34), 443))
         }
+    }
+
+    @Test
+    fun `onLost accepts an equal network handle wrapper from a later callback`() = runTest {
+        val facade = FakeFacade()
+        val availableHandle = FakeNetwork("lte").also { facade.currentNetwork = it }
+        val controller = controller(facade)
+        controller.start()
+        facade.callback!!.onAvailable(availableHandle, "C")
+        controller.state.first { it is CellularState.Available }
+
+        var cancelled = false
+        controller.addLossListener { cancelled = true }
+        facade.callback!!.onLost(FakeNetwork("lte"))
+
+        controller.state.first { it is CellularState.Lost }
+        assertTrue(cancelled)
     }
 
     @Test
