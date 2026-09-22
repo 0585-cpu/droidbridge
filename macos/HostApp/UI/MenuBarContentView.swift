@@ -52,8 +52,12 @@ struct MenuBarContentView: View {
 
             if let metrics = adapter.tunnelMetrics {
                 VStack(alignment: .leading) {
-                    Text(adapter.tunnelRunning ? "Tunnel: connected" : "Tunnel: stopped")
+                    Text("Tunnel: \(metrics.runtimeStatus.displayText)")
                     Text("Active flows: \(metrics.activeFlows)")
+                    if let carrier = metrics.carrierName {
+                        Text("Carrier: \(carrier)")
+                    }
+                    Text("↑\(metrics.uploadedBytes)  ↓\(metrics.downloadedBytes)")
                 }
                 .font(.caption)
             }
@@ -63,12 +67,20 @@ struct MenuBarContentView: View {
                 Button("Start Tunnel") { Task { await adapter.startTunnel() } }
                     .disabled(!adapter.canStartTunnel)
                 Button("Stop Tunnel") { Task { await adapter.stopTunnel() } }
-                    .disabled(!adapter.tunnelRunning)
+                    .disabled(!adapter.tunnelRunning || adapter.helperOperationInProgress)
+                if adapter.tunnelMetrics?.runtimeStatus.needsManualReconnect == true {
+                    Button("Reconnect") { Task { await adapter.reconnectTunnel() } }
+                        .disabled(adapter.helperOperationInProgress)
+                }
             }
             HStack {
                 Button("Refresh") { Task { await adapter.refresh() } }
                 Button("Disconnect") { Task { await adapter.disconnect() } }
             }
+            Button("Remove Privileged Helper…") {
+                Task { await adapter.uninstallHelper() }
+            }
+            .disabled(adapter.helperOperationInProgress)
             Button("Quit") { NSApplication.shared.terminate(nil) }
         }
         .padding()
@@ -76,6 +88,26 @@ struct MenuBarContentView: View {
         .task {
             adapter.startMonitoring()
             await adapter.refreshTunnelStatus()
+        }
+    }
+}
+
+private extension TunnelRuntimeStatus {
+    var displayText: String {
+        switch self {
+        case .running: "connected"
+        case .blockedRelay, .blockedCellular: "blocked"
+        case .reconnecting: "reconnecting"
+        case .persistentBlockedRelay, .persistentBlockedCellular: "blocked—action required"
+        case .teardownFailed: "teardown failed—retry stop"
+        case .stopped: "stopped"
+        }
+    }
+
+    var needsManualReconnect: Bool {
+        switch self {
+        case .persistentBlockedRelay, .persistentBlockedCellular: true
+        default: false
         }
     }
 }

@@ -96,28 +96,42 @@ print(leaked, len(post), successes, blocked_ms)
 PY
   )
   route_after="$(/sbin/route -n get "$target" | awk '$1=="interface:" && !found {print $2;found=1}')"
-  passed=false
+  fault_passed=false
   if [[ "$leaked" == "0" && "$post_attempts" -gt 0 && "$successful_after" == "0" \
         && "$first_failure_ms" -ge 0 && "$first_failure_ms" -le 3000 && "$route_after" == utun* ]]; then
-    passed=true
+    fault_passed=true
   fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$scenario" "$passed" "$leaked" \
-    "$post_attempts" "$successful_after" "$first_failure_ms" "$route_after" >>"$summary"
   rm -f "$attempts"
 
   case "$scenario" in
-    usb) pause_for "Reconnect USB, authorize ADB, then use Prepare Relay in DroidBridge." ;;
-    relay) pause_for "Start the Android app and relay, then use Prepare Relay in DroidBridge." ;;
+    usb) pause_for "Reconnect USB, authorize ADB, use Prepare Relay, then click Reconnect if shown." ;;
+    relay) pause_for "Start the Android app and relay, use Prepare Relay, then click Reconnect if shown." ;;
     cellular)
       "$adb" shell svc data enable >/dev/null || true
-      pause_for "Wait for cellular service, start the relay, then use Prepare Relay in DroidBridge."
+      pause_for "Wait for cellular service, start the relay, use Prepare Relay, then click Reconnect if shown."
       ;;
-    sleep) pause_for "Confirm the relay is prepared after wake." ;;
+    sleep) pause_for "Confirm the relay is prepared after wake, then click Reconnect if shown." ;;
   esac
-  nc -G 10 -z "$target" "$port" >/dev/null 2>&1 || {
+  recovery_passed=false
+  recovery_route_interface="unavailable"
+  if nc -G 10 -z "$target" "$port" >/dev/null 2>&1; then
+    recovery_route_interface="$(/sbin/route -n get "$target" 2>/dev/null |
+      awk '$1=="interface:" && !found {print $2;found=1}')"
+    recovery_route_interface="${recovery_route_interface:-unavailable}"
+    if [[ "$recovery_route_interface" == utun* ]]; then recovery_passed=true; fi
+  else
     echo "recovery failed after $scenario" >&2
-    exit 1
-  }
+  fi
+  if [[ "$recovery_passed" != true ]]; then
+    echo "recovery did not retain the utun route after $scenario" >&2
+  fi
+  passed=false
+  if [[ "$fault_passed" == true && "$recovery_passed" == true ]]; then passed=true; fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$scenario" "$passed" "$fault_passed" "$recovery_passed" "$leaked" \
+    "$post_attempts" "$successful_after" "$first_failure_ms" "$route_after" \
+    "$recovery_route_interface" >>"$summary"
+  [[ "$recovery_passed" == true ]] || break
 done
 
 python3 - "$summary" <<'PY'
@@ -127,13 +141,17 @@ sys.path.insert(0, "tools")
 from evidence import write_evidence
 scenarios = {}
 for line in open(sys.argv[1]):
-    name, passed, leaked, attempts, successes, blocked, interface = line.rstrip().split("\t")
+    (name, passed, fault_passed, recovery_passed, leaked, attempts,
+     successes, blocked, interface, recovery_interface) = line.rstrip().split("\t")
     scenarios[name] = {
-        "passed": passed == "true", "leakedPackets": int(leaked),
+        "passed": passed == "true", "faultPassed": fault_passed == "true",
+        "recoveryPassed": recovery_passed == "true", "leakedPackets": int(leaked),
         "postFaultAttempts": int(attempts), "successfulPostFaultAttempts": int(successes),
         "blockedWithinMs": int(blocked), "routeInterface": interface,
+        "recoveryRouteInterface": recovery_interface,
     }
-data = {"test": "b1-killswitch", "passed": bool(scenarios) and all(x["passed"] for x in scenarios.values()),
+data = {"test": "b1-killswitch", "passed": bool(scenarios)
+        and all(x["passed"] for x in scenarios.values()),
         "scenarios": scenarios}
 write_evidence(data, Path("build/evidence/killswitch.json"))
 print("killswitch:", "PASS" if data["passed"] else "FAIL", "-> build/evidence/killswitch.json")

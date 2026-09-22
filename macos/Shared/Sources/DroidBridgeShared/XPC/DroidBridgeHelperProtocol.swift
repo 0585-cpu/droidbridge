@@ -6,11 +6,13 @@ import Foundation
 /// them independently before changing tunnel state.
 @objc public protocol DroidBridgeHelperProtocol {
     func installStatus(reply: @escaping (Bool) -> Void)
+    func helperVersion(reply: @escaping (String) -> Void)
     func startTunnel(
         configJSON: Data,
         secret: Data,
         reply: @escaping (Bool, String?) -> Void
     )
+    func reconnectTunnel(reply: @escaping (Bool, String?) -> Void)
     func status(reply: @escaping (Data) -> Void)
     func stopTunnel(reply: @escaping (Bool) -> Void)
 }

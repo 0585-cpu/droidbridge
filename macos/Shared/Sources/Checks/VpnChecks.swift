@@ -67,10 +67,21 @@ func runVpnChecks(_ r: CheckRunner) {
         downloadedBytes: 200,
         carrierName: "C",
         cellularAvailable: true,
-        tunnelActive: true
+        tunnelActive: true,
+        runtimeStatus: .reconnecting
     )
     r.check((try? ProviderResponse.encodeMetrics(snap)) != nil, "metrics encode under cap")
     r.check(snap.tunnelActive, "metrics preserve protected tunnel lifecycle")
+    let roundTrip = try? JSONDecoder().decode(
+        TunnelMetricsSnapshot.self,
+        from: JSONEncoder.droidBridge.encode(snap)
+    )
+    r.check(roundTrip?.runtimeStatus == .reconnecting, "metrics preserve runtime reconnect state")
+    let legacy = Data(#"{"activeFlows":0,"uploadedBytes":0,"downloadedBytes":0,"cellularAvailable":false}"#.utf8)
+    r.check(
+        (try? JSONDecoder().decode(TunnelMetricsSnapshot.self, from: legacy))?.runtimeStatus == .stopped,
+        "legacy metrics default runtime state"
+    )
 
     r.finish("vpn")
 }

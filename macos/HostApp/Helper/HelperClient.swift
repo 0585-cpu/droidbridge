@@ -36,12 +36,13 @@ public final class HelperClient: @unchecked Sendable {
     private let helperRequirement: String
     private let installer: ManualHelperInstaller
 
-    public init(teamID: String = "ABCDE12345") {
+    public init(teamID: String? = RuntimeSigningIdentity.teamID()) {
+        let resolvedTeamID = teamID ?? "UNSIGNEDBUILD"
         helperRequirement = HelperCodeRequirement.string(
-            teamID: teamID,
+            teamID: resolvedTeamID,
             bundleID: "io.droidbridge.helper"
         )
-        installer = ManualHelperInstaller(teamID: teamID)
+        installer = ManualHelperInstaller(teamID: resolvedTeamID)
     }
 
     public func install() async throws {
@@ -52,6 +53,15 @@ public final class HelperClient: @unchecked Sendable {
             try await Task.sleep(for: .milliseconds(100))
         }
         throw HelperClientError.unavailable
+    }
+
+    public func uninstall() async throws {
+        // An explicit helper Stop is the only supported operation that releases
+        // a retained route/PF journal. Removal never bypasses that transition.
+        if await helperReachable() {
+            try await stop()
+        }
+        try await installer.uninstall()
     }
 
     public func start(config: TunnelRuntimeConfiguration, secret: Data) async throws {
@@ -103,6 +113,34 @@ public final class HelperClient: @unchecked Sendable {
         }
     }
 
+    public func reconnect() async throws {
+        let connection = makeConnection()
+        defer { connection.invalidate() }
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let gate = XPCReplyGate()
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
+                gate.once { continuation.resume(throwing: error) }
+            }) as? DroidBridgeHelperProtocol else {
+                continuation.resume(throwing: HelperClientError.unavailable)
+                return
+            }
+            proxy.reconnectTunnel { success, message in
+                gate.once {
+                    if success {
+                        continuation.resume()
+                    } else {
+                        continuation.resume(
+                            throwing: HelperClientError.rejected(
+                                message ?? "the helper rejected the reconnect request"
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     public func status() async -> TunnelMetricsSnapshot? {
         let connection = makeConnection()
         defer { connection.invalidate() }
@@ -128,7 +166,37 @@ public final class HelperClient: @unchecked Sendable {
     private func installationStatus() async -> Bool {
         let connection = makeConnection()
         defer { connection.invalidate() }
+        let expectedVersion = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? ""
 
+        return await withCheckedContinuation { continuation in
+            let gate = XPCReplyGate()
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+                gate.once { continuation.resume(returning: false) }
+            }) as? DroidBridgeHelperProtocol else {
+                continuation.resume(returning: false)
+                return
+            }
+            proxy.installStatus { installed in
+                guard installed else {
+                    gate.once { continuation.resume(returning: false) }
+                    return
+                }
+                proxy.helperVersion { version in
+                    gate.once {
+                        continuation.resume(
+                            returning: !expectedVersion.isEmpty && version == expectedVersion
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private func helperReachable() async -> Bool {
+        let connection = makeConnection()
+        defer { connection.invalidate() }
         return await withCheckedContinuation { continuation in
             let gate = XPCReplyGate()
             guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in

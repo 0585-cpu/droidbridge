@@ -16,6 +16,7 @@ final class TunnelController: NSObject, EngineBridgeDelegate, RelayFlowDelegate,
     private var engineBridge: EngineBridge?
     private let lifecycleLock = NSLock()
     private var isRunning = false
+    private var lifecycleGeneration: UInt64 = 0
     private let flowsLock = NSLock()
     private var flows: [UInt32: RelayFlowConnection] = [:]
     private let dnsClient: RelayDNSClient
@@ -43,11 +44,13 @@ final class TunnelController: NSObject, EngineBridgeDelegate, RelayFlowDelegate,
 
     @discardableResult
     func start() -> Bool {
-        guard lifecycleLock.withLock({
-            guard !isRunning else { return false }
+        let generation: UInt64? = lifecycleLock.withLock({
+            guard !isRunning else { return nil }
             isRunning = true
-            return true
-        }) else { return false }
+            lifecycleGeneration &+= 1
+            return lifecycleGeneration
+        })
+        guard let generation else { return false }
 
         let engine = engineFactory(maximumFlows, self)
         packetIngester = engine
@@ -56,12 +59,15 @@ final class TunnelController: NSObject, EngineBridgeDelegate, RelayFlowDelegate,
             lifecycleLock.withLock { isRunning = false }
             return false
         }
-        readPackets()
+        readPackets(generation: generation)
         return true
     }
 
     func stop() {
-        lifecycleLock.withLock { isRunning = false }
+        lifecycleLock.withLock {
+            isRunning = false
+            lifecycleGeneration &+= 1
+        }
         flowsLock.withLock { flows.values.forEach { conn in Task { await conn.close() } }; flows.removeAll() }
         engineBridge?.stop()
         packetIngester = nil
@@ -72,12 +78,14 @@ final class TunnelController: NSObject, EngineBridgeDelegate, RelayFlowDelegate,
 
     // MARK: - packet read loop
 
-    private func readPackets() {
-        guard lifecycleLock.withLock({ isRunning }) else { return }
+    private func readPackets(generation: UInt64) {
+        guard lifecycleLock.withLock({ isRunning && lifecycleGeneration == generation }) else { return }
         packetSource.read { [weak self] packets in
-            guard let self, self.lifecycleLock.withLock({ self.isRunning }) else { return }
+            guard let self, self.lifecycleLock.withLock({
+                self.isRunning && self.lifecycleGeneration == generation
+            }) else { return }
             // schedule the next read before processing, to avoid receive stalls
-            self.readPackets()
+            self.readPackets(generation: generation)
             for packet in packets { self.packetIngester?.ingest(packet) }
         }
     }

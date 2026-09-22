@@ -37,7 +37,9 @@ DROIDBRIDGE_DEVELOPMENT_TEAM=YOUR_TEAM ./scripts/build-signed-macos.sh
 The signed menu-bar app provides device selection, authenticated P-256/SAS pairing, relay health,
 administrator-authorized helper installation, and Start/Stop Tunnel controls. The helper owns utun,
 the default route, and the pf kill switch; startup orders protection before the route change and
-teardown restores the route before removing protection.
+teardown restores the route before removing protection. Authenticated health checks block the data
+plane on relay/cellular loss and retry with 1/2/4-second backoff. The menu also provides an
+administrator-authorized helper removal action that refuses to remove retained fail-closed state.
 
 Real-device acceptance and operator benchmark setup are documented in
 [`docs/b1-device-acceptance.md`](docs/b1-device-acceptance.md).

@@ -30,6 +30,7 @@ public final class DroidBridgeCoordinatorAdapter {
     public private(set) var tunnelMetrics: TunnelMetricsSnapshot?
     public private(set) var tunnelRunning = false
     public private(set) var tunnelMessage: String?
+    public private(set) var helperOperationInProgress = false
 
     private let core: DroidBridgeCoordinatorCore
     private let devices: () async -> [AdbDevice]
@@ -73,7 +74,7 @@ public final class DroidBridgeCoordinatorAdapter {
     public var hasPairing: Bool { (try? configStore.read()) != nil }
 
     public var canStartTunnel: Bool {
-        guard !tunnelRunning else { return false }
+        guard !tunnelRunning, !helperOperationInProgress else { return false }
         if case .relayReady = state { return true }
         return false
     }
@@ -240,6 +241,7 @@ public final class DroidBridgeCoordinatorAdapter {
     }
 
     public func forgetPairing() async {
+        guard !helperOperationInProgress else { return }
         if tunnelRunning { await stopTunnel() }
         guard !tunnelRunning else { return }
         if let configuration = try? configStore.read() {
@@ -254,6 +256,7 @@ public final class DroidBridgeCoordinatorAdapter {
     }
 
     public func disconnect() async {
+        guard !helperOperationInProgress else { return }
         if tunnelRunning {
             await stopTunnel()
             guard !tunnelRunning else { return }
@@ -264,7 +267,8 @@ public final class DroidBridgeCoordinatorAdapter {
     }
 
     public func startTunnel() async {
-        guard !tunnelRunning else { return }
+        guard !tunnelRunning, beginHelperOperation() else { return }
+        defer { helperOperationInProgress = false }
         tunnelMessage = "Installing privileged helper…"
         do {
             guard let configuration = try configStore.read() else {
@@ -284,12 +288,16 @@ public final class DroidBridgeCoordinatorAdapter {
             tunnelMessage = nil
             startStatusPolling()
         } catch {
+            let message = error.localizedDescription
             tunnelRunning = false
-            tunnelMessage = error.localizedDescription
+            await refreshTunnelStatus()
+            tunnelMessage = message
         }
     }
 
     public func stopTunnel() async {
+        guard beginHelperOperation() else { return }
+        defer { helperOperationInProgress = false }
         do {
             try await helper.stop()
             statusTask?.cancel()
@@ -299,6 +307,35 @@ public final class DroidBridgeCoordinatorAdapter {
             tunnelMessage = nil
         } catch {
             tunnelRunning = true
+            tunnelMessage = error.localizedDescription
+        }
+    }
+
+    public func reconnectTunnel() async {
+        guard beginHelperOperation() else { return }
+        defer { helperOperationInProgress = false }
+        do {
+            try await helper.reconnect()
+            tunnelMessage = "Rechecking the cellular relay…"
+            startStatusPolling()
+        } catch {
+            tunnelMessage = error.localizedDescription
+        }
+    }
+
+    public func uninstallHelper() async {
+        guard beginHelperOperation() else { return }
+        defer { helperOperationInProgress = false }
+        tunnelMessage = "Stopping and removing the privileged helper…"
+        do {
+            try await helper.uninstall()
+            statusTask?.cancel()
+            statusTask = nil
+            tunnelRunning = false
+            tunnelMetrics = nil
+            tunnelMessage = "Privileged helper removed."
+        } catch {
+            await refreshTunnelStatus()
             tunnelMessage = error.localizedDescription
         }
     }
@@ -330,6 +367,15 @@ public final class DroidBridgeCoordinatorAdapter {
         continuation?.resume(returning: approved)
     }
 
+    private func beginHelperOperation() -> Bool {
+        guard !helperOperationInProgress else {
+            tunnelMessage = "Another privileged-helper operation is already in progress."
+            return false
+        }
+        helperOperationInProgress = true
+        return true
+    }
+
     private func startStatusPolling() {
         guard statusTask == nil else { return }
         statusTask = Task { [weak self] in
@@ -338,8 +384,25 @@ public final class DroidBridgeCoordinatorAdapter {
                 if let metrics = await helper.status() {
                     tunnelMetrics = metrics
                     tunnelRunning = metrics.tunnelActive
-                    if metrics.tunnelActive && !metrics.cellularAvailable {
-                        tunnelMessage = "Tunnel stopped; fail-closed protection may still be active."
+                    switch metrics.runtimeStatus {
+                    case .running:
+                        tunnelMessage = nil
+                    case .blockedCellular:
+                        tunnelMessage = "Cellular unavailable; traffic is blocked fail-closed."
+                    case .blockedRelay:
+                        tunnelMessage = "USB relay unavailable; traffic is blocked fail-closed."
+                    case .reconnecting:
+                        tunnelMessage = "Retrying the cellular relay (1/2/4-second backoff)…"
+                    case .persistentBlockedCellular:
+                        tunnelMessage = "Cellular is still unavailable. Reconnect or stop the tunnel."
+                    case .persistentBlockedRelay:
+                        tunnelMessage = "USB relay is still unavailable. Reconnect or stop the tunnel."
+                    case .teardownFailed:
+                        tunnelMessage = "Teardown failed; protection remains active. Retry Stop Tunnel."
+                    case .stopped:
+                        if metrics.tunnelActive {
+                            tunnelMessage = "Tunnel stopped; fail-closed protection may still be active."
+                        }
                     }
                 }
                 try? await Task.sleep(for: .seconds(2))

@@ -29,6 +29,8 @@ read -r _
 
 echo "== Relay health =="
 DROIDBRIDGE_TEST_SECRET="$secret_hex" "$py" "$here/tools/dbp_probe.py" health --host 127.0.0.1 --port 27183
+echo "== Authenticated private-destination policy =="
+DROIDBRIDGE_TEST_SECRET="$secret_hex" "$here/scripts/b1-security.sh"
 echo "== OPEN_TCP example.com:443 (no application data) =="
 DROIDBRIDGE_TEST_SECRET="$secret_hex" "$py" "$here/tools/dbp_probe.py" open --host 127.0.0.1 --port 27183 --destination example.com:443
 

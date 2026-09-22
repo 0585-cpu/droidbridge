@@ -15,6 +15,12 @@ final class RouteController {
     var isConfigured: Bool { savedGateway != nil }
 
     func setDefault(utun: String) throws {
+        _ = try prepareDefault(utun: utun)
+        try installDefault()
+    }
+
+    @discardableResult
+    func prepareDefault(utun: String) throws -> String {
         guard savedGateway == nil else {
             throw HelperCommandError.failed(
                 executable: "/sbin/route",
@@ -35,6 +41,18 @@ final class RouteController {
         let gateway = try currentDefaultGateway()
         savedGateway = gateway
         activeUtun = utun
+        return gateway
+    }
+
+    func installDefault() throws {
+        guard let gateway = savedGateway, let utun = activeUtun else {
+            throw HelperCommandError.failed(
+                executable: "/sbin/route",
+                arguments: [],
+                status: EINVAL,
+                output: "the tunnel default route was not prepared"
+            )
+        }
         let commands = RouteCommandBuilder(utun: utun).setDefault(gateway: gateway)
 
         let deleteResult = try execute(commands[0])
@@ -63,14 +81,38 @@ final class RouteController {
         utunRouteInstalled = true
     }
 
+    func adoptRecoveryState(gateway: String, utun: String) throws {
+        guard isIPv4Address(gateway), NetworkHardwarePortParser.isSafeInterfaceName(utun) else {
+            throw HelperCommandError.failed(
+                executable: "/sbin/route",
+                arguments: [],
+                status: EINVAL,
+                output: "invalid persisted route recovery state"
+            )
+        }
+        savedGateway = gateway
+        activeUtun = utun
+        // State is written before the route mutation. restore() verifies whether
+        // the utun route actually exists before treating a failed delete as fatal.
+        utunRouteInstalled = true
+    }
+
     func restore() throws {
         guard let gateway = savedGateway, let utun = activeUtun else { return }
         let commands = RouteCommandBuilder(utun: utun).restoreDefault(gateway: gateway)
 
         if utunRouteInstalled {
             let deleteResult = try execute(commands[0])
-            guard deleteResult.status == 0 else {
+            if deleteResult.status == 0 {
+                // Clear this immediately. If restoring the gateway fails, the
+                // next retry must not try to delete an already-removed route.
+                utunRouteInstalled = false
+            } else if try defaultRouteUsesInterface(utun) {
                 throw commandError(commands[0], deleteResult)
+            } else {
+                // The helper may have restarted after the route was already
+                // removed. Recovery remains safe and idempotent.
+                utunRouteInstalled = false
             }
         }
         let restoreResult = try execute(commands[1])
@@ -104,6 +146,20 @@ final class RouteController {
             )
         }
         return gateway
+    }
+
+    private func defaultRouteUsesInterface(_ interface: String) throws -> Bool {
+        let executable = URL(fileURLWithPath: "/sbin/route")
+        let arguments = ["-n", "get", "default"]
+        let result = try run(executable, arguments, nil)
+        guard result.status == 0 else { return false }
+        let output = String(decoding: result.standardOutput, as: UTF8.self)
+        return output
+            .split(whereSeparator: \Character.isNewline)
+            .contains { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                return trimmed == "interface: \(interface)"
+            }
     }
 
     private func execute(_ command: [String]) throws -> HelperCommandResult {

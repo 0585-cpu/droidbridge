@@ -13,6 +13,7 @@ final class PfController {
     }
 
     var isEnabled: Bool { enableToken != nil }
+    var recoveryToken: String? { enableToken }
 
     func enable(utun: String, physical: [String]) throws {
         guard enableToken == nil else {
@@ -70,6 +71,25 @@ final class PfController {
             throw commandError(releaseArguments, releaseResult)
         }
         self.enableToken = nil
+    }
+
+    func adoptRecoveryToken(_ token: String) throws {
+        guard !token.isEmpty, token.allSatisfy(\.isNumber) else {
+            throw HelperCommandError.failed(
+                executable: "/sbin/pfctl",
+                arguments: [],
+                status: EINVAL,
+                output: "invalid persisted pf enable token"
+            )
+        }
+        enableToken = token
+    }
+
+    func clearAnchorRules() throws {
+        let result = try flushAnchor()
+        guard result.status == 0 else {
+            throw commandError(["-a", Self.anchorName, "-F", "rules"], result)
+        }
     }
 
     private func flushAnchor() throws -> HelperCommandResult {

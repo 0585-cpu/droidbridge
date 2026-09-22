@@ -1,5 +1,16 @@
 import Foundation
 
+public enum TunnelRuntimeStatus: String, Codable, Equatable, Sendable {
+    case running
+    case blockedRelay
+    case blockedCellular
+    case reconnecting
+    case persistentBlockedRelay
+    case persistentBlockedCellular
+    case teardownFailed
+    case stopped
+}
+
 /// Safe metrics for display and for the provider `metrics` message. Carries no destinations or payload.
 public struct TunnelMetricsSnapshot: Codable, Equatable, Sendable {
     public let activeFlows: Int
@@ -10,15 +21,18 @@ public struct TunnelMetricsSnapshot: Codable, Equatable, Sendable {
     /// True while the helper still owns utun/route/pf state, including a retained fail-closed
     /// rollback state that the user must be able to stop explicitly.
     public let tunnelActive: Bool
+    public let runtimeStatus: TunnelRuntimeStatus
 
     public init(activeFlows: Int, uploadedBytes: UInt64, downloadedBytes: UInt64,
-                carrierName: String?, cellularAvailable: Bool, tunnelActive: Bool? = nil) {
+                carrierName: String?, cellularAvailable: Bool, tunnelActive: Bool? = nil,
+                runtimeStatus: TunnelRuntimeStatus? = nil) {
         self.activeFlows = activeFlows
         self.uploadedBytes = uploadedBytes
         self.downloadedBytes = downloadedBytes
         self.carrierName = carrierName
         self.cellularAvailable = cellularAvailable
         self.tunnelActive = tunnelActive ?? cellularAvailable
+        self.runtimeStatus = runtimeStatus ?? (cellularAvailable ? .running : .stopped)
     }
 
     public init(from decoder: any Decoder) throws {
@@ -30,5 +44,7 @@ public struct TunnelMetricsSnapshot: Codable, Equatable, Sendable {
         cellularAvailable = try container.decode(Bool.self, forKey: .cellularAvailable)
         tunnelActive = try container.decodeIfPresent(Bool.self, forKey: .tunnelActive)
             ?? cellularAvailable
+        runtimeStatus = try container.decodeIfPresent(TunnelRuntimeStatus.self, forKey: .runtimeStatus)
+            ?? (cellularAvailable ? .running : .stopped)
     }
 }

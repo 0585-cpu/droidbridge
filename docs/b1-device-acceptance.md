@@ -15,6 +15,22 @@ python3 tools/b1_benchmark.py server --bind 0.0.0.0 --port 28443
 The DBB1 server transfers deterministic bytes and records nothing. It is plain TCP, so expose only
 the dedicated test port and remove the firewall rule after acceptance.
 
+## Authenticated policy probe
+
+Before pairing the Mac app, use a dedicated, temporary probe pairing. Tap **Pair New Mac** on the
+Android device, run the command below, confirm the six-digit SAS, and then start the Android relay
+when prompted:
+
+```bash
+./scripts/smoke-android-relay.sh
+```
+
+The script holds the probe secret only in a protected temporary file and process environment,
+requires an authenticated DBP request to a private IPv4 destination to return `POLICY_DENIED`,
+checks that a random invalid key is rejected, and removes the temporary secret and ADB forwards on
+exit. It records no pairing material. Because Android retains only the current peer, pair the Mac
+app again after this probe.
+
 ## App workflow
 
 1. Install/start the Android app and connect USB with USB debugging authorized.
@@ -25,6 +41,9 @@ the dedicated test port and remove the firewall rule after acceptance.
    administrator prompt used to install the signed LaunchDaemon helper.
 5. Use **Stop Tunnel** before quitting or uninstalling. A teardown failure deliberately leaves the
    kill switch active and displays an error.
+6. To remove the root component, choose **Remove Privileged Helper…** and approve the administrator
+   prompt. Removal first requests the helper's explicit Stop transition and refuses to unregister
+   or delete files while fail-closed recovery state remains.
 
 ## Evidence commands
 
@@ -71,6 +90,19 @@ DROIDBRIDGE_FAULT_IPV4=YOUR_OPERATOR_PUBLIC_IPV4 \
 DROIDBRIDGE_FAULT_PORT=443 \
 ./scripts/b1-killswitch.sh all
 ```
+
+Each fault must block within three seconds without packets on the Mac Wi-Fi interface, retain the
+utun default route, and then successfully pass a fresh TCP check after USB/relay/cellular/sleep
+recovery. These four successful post-fault checks are the reconnect evidence; ordinary TCP
+connections in the one-hour workload do not count as reconnects.
+
+Finally, combine the redacted results into the 14-criterion release manifest:
+
+```bash
+make b1-acceptance
+```
+
+Only `build/evidence/acceptance.json` with `"passed": true` satisfies the B1 device gate.
 
 Outputs are written below `build/evidence/`. The scripts store only aggregate state, interface,
 latency, byte-count, and memory facts; they do not store transferred content, URLs, DNS query names,

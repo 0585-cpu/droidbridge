@@ -27,6 +27,37 @@ final class FakeDbpConnection: DbpConnection, @unchecked Sendable {
     func close() async {}
 }
 
+private final class HangingDbpConnection: DbpConnection, @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiters: [CheckedContinuation<Data, Error>] = []
+    private var closed = false
+
+    func send(_ data: Data) async throws {}
+    func receiveExactly(_ count: Int) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            let shouldFail = lock.withLock {
+                if closed { return true }
+                waiters.append(continuation)
+                return false
+            }
+            if shouldFail {
+                continuation.resume(throwing: DroidBridgeError.relayProtocol("closed"))
+            }
+        }
+    }
+    func close() async {
+        let pending = lock.withLock { () -> [CheckedContinuation<Data, Error>] in
+            closed = true
+            defer { waiters.removeAll() }
+            return waiters
+        }
+        pending.forEach {
+            $0.resume(throwing: DroidBridgeError.relayProtocol("closed"))
+        }
+    }
+    var wasClosed: Bool { lock.withLock { closed } }
+}
+
 private struct StubHealth: RelayHealthChecking {
     let result: Result<RelayHealth, DroidBridgeError>
     func health(secret: Data) async throws -> RelayHealth { try result.get() }
@@ -99,6 +130,21 @@ func runRelayChecks(_ r: CheckRunner) async {
     // wrong secret -> auth failure
     let badClient = RelayControlClient(secret: Data(count: 32), connectionFactory: { echo.makeConnection() }, now: { 1_700_000_000 })
     do { _ = try await badClient.health(); r.check(false, "wrong secret rejected") } catch { r.check(true, "wrong secret rejected") }
+
+    // timeout actively closes a stalled transport so structured concurrency
+    // cannot wait forever for an uncooperative receive continuation.
+    let hanging = HangingDbpConnection()
+    let timeoutClient = RelayControlClient(
+        secret: fixtureSecret,
+        connectionFactory: { hanging },
+        now: { 1_700_000_000 }
+    )
+    do {
+        _ = try await timeoutClient.health(timeout: .milliseconds(20))
+        r.check(false, "stalled health should time out")
+    } catch {
+        r.check(hanging.wasClosed, "health timeout closes stalled transport")
+    }
 
     // --- RelayPreparer rollback ---
     let adb = StubAdb(failRelayForward: true)

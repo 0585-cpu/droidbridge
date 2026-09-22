@@ -11,6 +11,7 @@ team="${DROIDBRIDGE_DEVELOPMENT_TEAM:-}"
 dd="$here/build/DerivedData"
 dd_ne="$here/build/DerivedData-NE"
 xcodegen generate
+make check-macos-helper
 
 # Keep the dormant paid-account path compiling without asking the free team to
 # provision the NetworkExtension entitlement.
@@ -37,6 +38,9 @@ codesign --verify --deep --strict "$app" >/dev/null 2>&1 \
   && echo "[PASS] app signature verifies" || { echo "[FAIL] app signature" >&2; rc=1; }
 check_ent "$app" "group.io.droidbridge.shared" "host app-group" || rc=1
 check_ent "$app" "io.droidbridge.shared" "host keychain-access-group" || rc=1
+host_runtime_team="$(plutil -extract DroidBridgeTeamIdentifier raw -o - "$app/Contents/Info.plist" 2>/dev/null || true)"
+[ "$host_runtime_team" = "$team" ] \
+  && echo "[PASS] host runtime signing team" || { echo "[FAIL] host runtime signing team" >&2; rc=1; }
 
 helper_details="$(codesign -dvv "$helper" 2>&1)"
 has() { grep -qF "$2" <<<"$1"; }
@@ -46,6 +50,9 @@ has "$helper_details" "TeamIdentifier=$team" \
   && echo "[PASS] helper signed by team" || { echo "[FAIL] helper signing team" >&2; rc=1; }
 codesign --verify --strict "$helper" >/dev/null 2>&1 \
   && echo "[PASS] helper signature verifies" || { echo "[FAIL] helper signature" >&2; rc=1; }
+helper_runtime_team="$("$helper" --selftest-signing-team 2>/dev/null || true)"
+[ "$helper_runtime_team" = "$team" ] \
+  && echo "[PASS] helper runtime signing team" || { echo "[FAIL] helper runtime signing team" >&2; rc=1; }
 helper_entitlements="$(codesign -d --entitlements :- "$helper" 2>&1 || true)"
 if has "$helper_entitlements" "networkextension"; then
   echo "[FAIL] helper must not carry a NetworkExtension entitlement" >&2

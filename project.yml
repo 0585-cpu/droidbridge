@@ -27,6 +27,7 @@ targets:
         CREATE_INFOPLIST_SECTION_IN_BINARY: YES
         INFOPLIST_FILE: macos/Helper/Info.plist
         MARKETING_VERSION: "0.1.0"
+        INFOPLIST_KEY_DroidBridgeTeamIdentifier: $(DEVELOPMENT_TEAM)
         SWIFT_VERSION: "6.0"
         HEADER_SEARCH_PATHS:
           - $(SRCROOT)/core/include
@@ -54,6 +55,21 @@ targets:
         OTHER_CFLAGS: [-Wno-everything]
         GCC_WARN_INHIBIT_ALL_WARNINGS: YES
         SWIFT_VERSION: "6.0"
+  DroidBridgeHelperChecks:
+    type: tool
+    platform: macOS
+    sources:
+      - path: macos/HelperChecks
+      - path: macos/Helper/HelperCommandRunner.swift
+      - path: macos/Helper/RouteController.swift
+      - path: macos/Helper/PfController.swift
+      - path: macos/Helper/HelperRecoveryStateStore.swift
+    dependencies:
+      - package: DroidBridgeShared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.droidbridge.helper-checks
+        SWIFT_VERSION: "6.0"
   DroidBridgeHost:
     type: application
     platform: macOS
@@ -75,8 +91,11 @@ targets:
       path: macos/HostApp/Resources/Info.plist
       properties:
         LSUIElement: true
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: "1"
         SMPrivilegedExecutables:
           io.droidbridge.helper: 'identifier "io.droidbridge.helper" and anchor apple generic and certificate leaf[subject.OU] = "$(DEVELOPMENT_TEAM)"'
+        DroidBridgeTeamIdentifier: $(DEVELOPMENT_TEAM)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.droidbridge.macos

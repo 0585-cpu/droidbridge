@@ -13,7 +13,8 @@
 ## Global Constraints
 
 - Apple Silicon, macOS 14+. Sign with the free Apple Development cert; **no SIP/AMFI changes**.
-- Team ID `ABCDE12345` is injected at build time (`DEVELOPMENT_TEAM=`), **never committed** to `project.yml`.
+- The active Team ID is injected at build time (`DEVELOPMENT_TEAM=`), sealed into both binaries'
+  Info dictionaries, and used for mutual XPC requirements; runtime code has no developer-specific default.
 - The SwiftPM `macos/Shared` package must stay **CLT-buildable**: it may NOT import `DroidBridgeCore` (the C module) or `NetworkExtension`. C/utun-dependent code lives in Xcode-only groups.
 - Tests run via the assert-based `Checks` executable (`make check-macos`), not XCTest. C core via `make test-core`.
 - Relay reaches the phone at `127.0.0.1:27183` (adb forward, loopback + USB). B1 is IPv4-only; drop IPv6 frames.

@@ -1,6 +1,20 @@
 import Foundation
 import Network
 
+private final class NetworkContinuationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = false
+
+    func once(_ body: () -> Void) {
+        let shouldRun = lock.withLock {
+            guard !completed else { return false }
+            completed = true
+            return true
+        }
+        if shouldRun { body() }
+    }
+}
+
 /// Byte transport for a relay flow: a loopback TCP connection to the Android relay. Abstracted so the
 /// flow logic is testable without a real socket.
 public protocol RelayTransport: Sendable {
@@ -22,16 +36,25 @@ public actor NWConnectionTransport: RelayTransport {
     }
 
     public func start() async throws {
+        let connection = self.connection
         connection.start(queue: .global())
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready: cont.resume()
-                case .failed(let error): cont.resume(throwing: error)
-                case .cancelled: cont.resume(throwing: DroidBridgeError.relayProtocol("cancelled"))
-                default: break
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                let gate = NetworkContinuationGate()
+                connection.stateUpdateHandler = { state in
+                    switch state {
+                    case .ready: gate.once { cont.resume() }
+                    case .failed(let error): gate.once { cont.resume(throwing: error) }
+                    case .cancelled:
+                        gate.once {
+                            cont.resume(throwing: DroidBridgeError.relayProtocol("cancelled"))
+                        }
+                    default: break
+                    }
                 }
             }
+        } onCancel: {
+            connection.cancel()
         }
         connection.stateUpdateHandler = nil
     }
@@ -45,12 +68,17 @@ public actor NWConnectionTransport: RelayTransport {
     }
 
     public func receiveExactly(_ count: Int) async throws -> Data {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
-            connection.receive(minimumIncompleteLength: count, maximumLength: count) { data, _, _, error in
-                if let error { cont.resume(throwing: error) }
-                else if let data, data.count == count { cont.resume(returning: data) }
-                else { cont.resume(throwing: DroidBridgeError.relayProtocol("peer closed")) }
+        let connection = self.connection
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+                connection.receive(minimumIncompleteLength: count, maximumLength: count) { data, _, _, error in
+                    if let error { cont.resume(throwing: error) }
+                    else if let data, data.count == count { cont.resume(returning: data) }
+                    else { cont.resume(throwing: DroidBridgeError.relayProtocol("peer closed")) }
+                }
             }
+        } onCancel: {
+            connection.cancel()
         }
     }
 

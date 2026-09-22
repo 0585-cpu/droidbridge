@@ -77,11 +77,20 @@ record relay_ports_free "$(yn $?)"
 # 12. all unit tests pass (foundation + Swift + core)
 make verify-foundation >/dev/null 2>&1; record foundation_tests "$(yn $?)"
 make check-macos >/dev/null 2>&1; record swift_checks "$(yn $?)"
+make check-macos-helper >/dev/null 2>&1; record helper_checks "$(yn $?)"
 make test-core >/dev/null 2>&1; record core_tests "$(yn $?)"
+make test-android >/dev/null 2>&1; record android_tests "$(yn $?)"
 
 # 13. privileged helper installed and registered with system launchd
 launchctl print system/io.droidbridge.helper >/dev/null 2>&1
 record helper_installed "$(yn $?)"
+installed_helper="/Library/PrivilegedHelperTools/io.droidbridge.helper"
+helper_owner="$(stat -f '%Su:%Sg:%Lp' "$installed_helper" 2>/dev/null || true)"
+[ "$helper_owner" = "root:wheel:100755" ]; record helper_owner_mode "$(yn $?)" "${helper_owner:-missing}"
+helper_details="$(codesign -dvv "$installed_helper" 2>&1 || true)"
+has "$helper_details" "Identifier=io.droidbridge.helper" && \
+  has "$helper_details" "TeamIdentifier=${DROIDBRIDGE_DEVELOPMENT_TEAM:-unset}"
+record helper_signature "$(yn $?)"
 
 # --- emit evidence + human summary ---
 python3 - "$fail" "${checks[@]}" <<'PY'

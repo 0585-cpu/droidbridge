@@ -18,6 +18,16 @@ print(parse_duration(sys.argv[1]))
 PY
 )"
 
+python3 - "$DROIDBRIDGE_BENCH_HOST" <<'PY'
+import ipaddress, sys
+try:
+    ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    pass
+else:
+    raise SystemExit("B1 soak requires a DNS hostname, not a numeric IP address")
+PY
+
 resolved="$(python3 - "$DROIDBRIDGE_BENCH_HOST" <<'PY'
 import ipaddress, socket, sys
 for item in socket.getaddrinfo(sys.argv[1], None, socket.AF_INET, socket.SOCK_STREAM):
@@ -81,10 +91,12 @@ growths = {"appRssGrowthKiB": growth(1), "helperRssGrowthKiB": growth(2),
 memory_ok = all(value <= 50 * 1024 for value in growths.values())
 remaining = int(sys.argv[5])
 gate = (expected >= 3600 and integrity.get("bytes") == 1073741824 and integrity.get("integrityVerified")
-        and soak.get("passed") and soak.get("failures") == 0 and memory_ok and remaining == 0)
+        and soak.get("passed") and soak.get("failures") == 0 and soak.get("dnsChecks", 0) > 0
+        and soak.get("tcpConnectionCycles", 0) > 0 and memory_ok and remaining == 0)
 data = {
     "test": "b1-soak", "passed": bool(gate), "integrityTransfer": integrity,
     "workload": soak, "memory": {**growths, "samples": len(samples), "passed": memory_ok},
+    "dnsHostnameVerified": True,
     "remainingRelayConnections": remaining, "requiredDurationSeconds": 3600,
 }
 write_evidence(data, Path("build/evidence/soak.json"))

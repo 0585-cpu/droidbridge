@@ -33,9 +33,12 @@ test-android:
 smoke-android:
 	./scripts/smoke-android-relay.sh
 
-.PHONY: check-macos smoke-macos-control
+.PHONY: check-macos check-macos-helper smoke-macos-control
 check-macos:
 	swift run --package-path macos/Shared Checks
+
+check-macos-helper:
+	./scripts/check-macos-helper.sh
 
 smoke-macos-control:
 	./scripts/run-macos-control-smoke.sh --preflight
@@ -47,9 +50,12 @@ benchmark-core:
 verify-data-plane:
 	./scripts/verify-data-plane.sh
 
-.PHONY: b1-preflight b1-stress b1-performance b1-soak build-signed-macos build-android-release
+.PHONY: b1-preflight b1-security b1-stress b1-performance b1-soak b1-acceptance build-signed-macos build-android-release
 b1-preflight:
 	./scripts/b1-preflight.sh
+
+b1-security:
+	./scripts/b1-security.sh
 
 b1-stress:
 	./scripts/b1-stress.sh
@@ -59,6 +65,9 @@ b1-performance:
 
 b1-soak:
 	./scripts/b1-soak.sh --duration 60m
+
+b1-acceptance:
+	python3 tools/b1_acceptance.py build/evidence
 
 build-signed-macos:
 	./scripts/build-signed-macos.sh

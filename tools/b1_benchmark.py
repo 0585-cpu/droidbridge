@@ -13,6 +13,7 @@ import json
 import math
 import os
 import re
+import socket
 import struct
 import time
 from collections.abc import Sequence
@@ -199,21 +200,30 @@ async def soak(host: str, port: int, duration: int) -> dict[str, int | bool | fl
     next_stress = started
     operations = failures = bursts = 0
     max_rtt = 0.0
+    dns_checks = tcp_connection_cycles = 0
     while time.monotonic() - started < duration:
         try:
+            await asyncio.get_running_loop().run_in_executor(
+                None, socket.getaddrinfo, host, port, socket.AF_INET, socket.SOCK_STREAM
+            )
+            dns_checks += 1
             ping = await ping_series(host, port, samples=10, warmups=1)
+            tcp_connection_cycles += 1
             max_rtt = max(max_rtt, ping["p95RttMs"])
             operations += 10
             for _ in range(4):
                 await _echo_flow(host, port, 4096, 0)
                 operations += 1
+                tcp_connection_cycles += 1
             await download(host, port, 8 * 1024 * 1024)
             operations += 1
+            tcp_connection_cycles += 1
             if time.monotonic() >= next_stress:
                 result = await stress(host, port, 128, 4096, 1)
                 operations += 128
                 failures += int(result["failedFlows"])
                 bursts += 1
+                tcp_connection_cycles += 128
                 next_stress = time.monotonic() + 15 * 60
         except Exception:
             failures += 1
@@ -226,6 +236,9 @@ async def soak(host: str, port: int, duration: int) -> dict[str, int | bool | fl
         "operations": operations,
         "failures": failures,
         "stressBursts": bursts,
+        "dnsChecks": dns_checks,
+        # This counts ordinary workload connections, not relay recovery.
+        "tcpConnectionCycles": tcp_connection_cycles,
         "maxP95RttMs": round(max_rtt, 3),
         "passed": failures == 0 and elapsed >= duration,
     }

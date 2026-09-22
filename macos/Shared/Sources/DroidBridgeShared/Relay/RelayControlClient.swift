@@ -22,17 +22,33 @@ public struct RelayControlClient: Sendable {
     }
 
     public func health(timeout: Duration = .seconds(3)) async throws -> RelayHealth {
-        try await withThrowingTaskGroup(of: RelayHealth.self) { group in
-            group.addTask { try await performHealth() }
-            group.addTask { try await Task.sleep(for: timeout); throw DroidBridgeError.relayTimedOut }
-            defer { group.cancelAll() }
-            guard let result = try await group.next() else { throw DroidBridgeError.relayTimedOut }
-            return result
+        let box = DbpConnectionBox()
+        return try await withTaskCancellationHandler {
+            try await withThrowingTaskGroup(of: RelayHealth.self) { group in
+                group.addTask {
+                    let connection = try await connectionFactory()
+                    guard await box.store(connection) else {
+                        throw CancellationError()
+                    }
+                    return try await performHealth(connection)
+                }
+                group.addTask {
+                    try await Task.sleep(for: timeout)
+                    await box.close()
+                    throw DroidBridgeError.relayTimedOut
+                }
+                defer { group.cancelAll() }
+                guard let result = try await group.next() else {
+                    throw DroidBridgeError.relayTimedOut
+                }
+                return result
+            }
+        } onCancel: {
+            Task { await box.close() }
         }
     }
 
-    private func performHealth() async throws -> RelayHealth {
-        let connection = try await connectionFactory()
+    private func performHealth(_ connection: any DbpConnection) async throws -> RelayHealth {
         defer { Task { await connection.close() } }
 
         let clientNonce = UInt64.random(in: 1 ... .max)
@@ -73,5 +89,26 @@ public struct RelayControlClient: Sendable {
         let expected = DbpCodec.computeHMAC(secret: secret, header: header, payload: payload)
         guard expected == hmac else { throw DroidBridgeError.relayAuthenticationFailed }
         return (header, payload)
+    }
+}
+
+private actor DbpConnectionBox {
+    private var connection: (any DbpConnection)?
+    private var closed = false
+
+    func store(_ connection: any DbpConnection) async -> Bool {
+        guard !closed else {
+            await connection.close()
+            return false
+        }
+        self.connection = connection
+        return true
+    }
+
+    func close() async {
+        closed = true
+        guard let connection else { return }
+        self.connection = nil
+        await connection.close()
     }
 }

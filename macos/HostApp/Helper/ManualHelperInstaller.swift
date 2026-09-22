@@ -7,7 +7,8 @@ enum ManualHelperInstallerError: LocalizedError {
     case missingEmbeddedFile(String)
     case invalidLaunchDaemonPlist
     case invalidHelperSignature(OSStatus)
-    case authorizationFailed(String)
+    case authorizationFailed(operation: String, message: String)
+    case removalIncomplete
 
     var errorDescription: String? {
         switch self {
@@ -17,8 +18,10 @@ enum ManualHelperInstallerError: LocalizedError {
             return "the embedded launch daemon plist is invalid"
         case let .invalidHelperSignature(status):
             return "the embedded helper failed code-signature validation (\(status))"
-        case let .authorizationFailed(message):
-            return "administrator-authorized helper installation failed: \(message)"
+        case let .authorizationFailed(operation, message):
+            return "administrator-authorized helper \(operation) failed: \(message)"
+        case .removalIncomplete:
+            return "the privileged helper files remain after the removal command"
         }
     }
 }
@@ -36,12 +39,12 @@ struct ManualHelperInstaller: Sendable {
     init(
         bundleURL: URL = Bundle.main.bundleURL,
         runner: any ProcessRunning = FoundationProcessRunner(),
-        teamID: String = "ABCDE12345"
+        teamID: String? = RuntimeSigningIdentity.teamID()
     ) {
         self.bundleURL = bundleURL
         self.runner = runner
         helperRequirement = HelperCodeRequirement.string(
-            teamID: teamID,
+            teamID: teamID ?? "UNSIGNEDBUILD",
             bundleID: "io.droidbridge.helper"
         )
     }
@@ -71,8 +74,33 @@ struct ManualHelperInstaller: Sendable {
         guard result.exitCode == 0 else {
             let message = result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
             throw ManualHelperInstallerError.authorizationFailed(
-                message.isEmpty ? "osascript exited with status \(result.exitCode)" : message
+                operation: "installation",
+                message: message.isEmpty ? "osascript exited with status \(result.exitCode)" : message
             )
+        }
+    }
+
+    /// Removes only a fully stopped helper. The root-side script refuses to
+    /// unregister or delete anything while the crash-recovery journal exists.
+    func uninstall() async throws {
+        let result = try await runner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/osascript"),
+            arguments: ["-e", Self.uninstallAppleScript],
+            environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+        )
+        guard result.exitCode == 0 else {
+            let message = result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw ManualHelperInstallerError.authorizationFailed(
+                operation: "removal",
+                message: message.isEmpty ? "osascript exited with status \(result.exitCode)" : message
+            )
+        }
+        let helper = URL(fileURLWithPath: "/Library/PrivilegedHelperTools/io.droidbridge.helper")
+        let plist = URL(fileURLWithPath: "/Library/LaunchDaemons/io.droidbridge.helper.plist")
+        guard !FileManager.default.fileExists(atPath: helper.path),
+              !FileManager.default.fileExists(atPath: plist.path)
+        else {
+            throw ManualHelperInstallerError.removalIncomplete
         }
     }
 
@@ -120,9 +148,15 @@ on run argv
     set plistDestination to "/Library/LaunchDaemons/io.droidbridge.helper.plist"
     set helperStage to helperDestination & ".new"
     set plistStage to plistDestination & ".new"
+    set recoveryState to "/Library/PrivilegedHelperTools/io.droidbridge.recovery.json"
     set requirementArgument to "-R=" & helperRequirement
 
-    set commandText to "/bin/rm -f " & quoted form of helperStage & " " & quoted form of plistStage
+    set operationLock to "/Library/PrivilegedHelperTools/.io.droidbridge.operation.lock"
+    set commandText to "/usr/bin/shlock -f " & quoted form of operationLock & " -p $$ || { echo 'another DroidBridge helper operation is in progress' >&2; exit 73; }"
+    set commandText to commandText & "; trap 'trap - 1 2 15; exit 74' 1 2 15"
+    set commandText to commandText & "; trap '/bin/rm -f " & operationLock & "' 0"
+    set commandText to commandText & "; if test -e " & quoted form of recoveryState & "; then echo 'DroidBridge fail-closed recovery is active; retry Stop Tunnel before updating the helper' >&2; exit 70; fi"
+    set commandText to commandText & " && /bin/rm -f " & quoted form of helperStage & " " & quoted form of plistStage
     set commandText to commandText & " && /usr/bin/install -o root -g wheel -m 0755 " & quoted form of helperSource & " " & quoted form of helperStage
     set commandText to commandText & " && /usr/bin/codesign --verify --strict " & quoted form of requirementArgument & " " & quoted form of helperStage
     set commandText to commandText & " && /usr/bin/install -o root -g wheel -m 0644 " & quoted form of plistSource & " " & quoted form of plistStage
@@ -133,8 +167,31 @@ on run argv
     set commandText to commandText & " && test \"$(/usr/bin/plutil -extract MachServices.io.droidbridge.helper raw -o - " & quoted form of plistStage & ")\" = true"
     set commandText to commandText & " && /bin/mv -f " & quoted form of helperStage & " " & quoted form of helperDestination
     set commandText to commandText & " && /bin/mv -f " & quoted form of plistStage & " " & quoted form of plistDestination
-    set commandText to commandText & " && (/bin/launchctl bootout system/io.droidbridge.helper >/dev/null 2>&1 || true)"
+    set commandText to commandText & " && if /bin/launchctl print system/io.droidbridge.helper >/dev/null 2>&1; then /bin/launchctl bootout system/io.droidbridge.helper >/dev/null 2>&1 || { echo 'could not unregister the previous DroidBridge helper' >&2; exit 71; }; fi"
+    set commandText to commandText & " && if /bin/launchctl print system/io.droidbridge.helper >/dev/null 2>&1; then echo 'the previous DroidBridge helper is still registered' >&2; exit 71; fi"
     set commandText to commandText & " && /bin/launchctl bootstrap system " & quoted form of plistDestination
+    do shell script commandText with administrator privileges
+end run
+"""#
+
+    private static let uninstallAppleScript = #"""
+on run argv
+    if (count of argv) is not 0 then error "invalid uninstaller arguments"
+    set helperDestination to "/Library/PrivilegedHelperTools/io.droidbridge.helper"
+    set plistDestination to "/Library/LaunchDaemons/io.droidbridge.helper.plist"
+    set recoveryState to "/Library/PrivilegedHelperTools/io.droidbridge.recovery.json"
+    set operationLock to "/Library/PrivilegedHelperTools/.io.droidbridge.operation.lock"
+    set helperStage to helperDestination & ".new"
+    set plistStage to plistDestination & ".new"
+
+    set commandText to "/usr/bin/shlock -f " & quoted form of operationLock & " -p $$ || { echo 'another DroidBridge helper operation is in progress' >&2; exit 73; }"
+    set commandText to commandText & "; trap 'trap - 1 2 15; exit 74' 1 2 15"
+    set commandText to commandText & "; trap '/bin/rm -f " & operationLock & "' 0"
+    set commandText to commandText & "; if test -e " & quoted form of recoveryState & "; then echo 'DroidBridge fail-closed recovery is still active; retry Stop Tunnel first' >&2; exit 70; fi"
+    set commandText to commandText & "; if /bin/launchctl print system/io.droidbridge.helper >/dev/null 2>&1; then /bin/launchctl bootout system/io.droidbridge.helper >/dev/null 2>&1 || { echo 'could not unregister DroidBridge helper; files were retained' >&2; exit 71; }; fi"
+    set commandText to commandText & "; if /bin/launchctl print system/io.droidbridge.helper >/dev/null 2>&1; then echo 'DroidBridge helper is still registered; files were retained' >&2; exit 71; fi"
+    set commandText to commandText & "; if test -e " & quoted form of recoveryState & "; then if test -f " & quoted form of plistDestination & "; then /bin/launchctl bootstrap system " & quoted form of plistDestination & " >/dev/null 2>&1 || true; fi; echo 'DroidBridge became active during removal; helper was retained' >&2; exit 70; fi"
+    set commandText to commandText & "; /bin/rm -f " & quoted form of helperDestination & " " & quoted form of plistDestination & " " & quoted form of helperStage & " " & quoted form of plistStage
     do shell script commandText with administrator privileges
 end run
 """#
