@@ -1,21 +1,20 @@
 # DroidBridge
 
-Use an Android phone's LTE/5G as a fail-closed full-tunnel exit for a Mac over
-USB (ADB TCP forwarding). No root, no kernel extension, no carrier tethering
-tricks.
+Use an Android phone's LTE/5G as a fail-closed IPv4 TCP/DNS tunnel exit for a Mac over USB (ADB TCP
+forwarding). Android root and macOS kernel extensions are not required. The app does not alter TTL,
+APN, DUN, or carrier settings and does not claim to change how a carrier bills or classifies traffic.
 
-Status: **B1 in development** (IPv4 TCP + DNS). See
+Status: **B1 implementation complete; real-device acceptance pending** (IPv4 TCP + DNS). See
 `docs/superpowers/plans/2026-09-21-droidbridge-b1-b3-roadmap.md`.
 
 ## Layout
 
 ```text
-macos/      HostApp (SwiftUI menu bar) + Shared Swift package + Packet Tunnel
+macos/      HostApp + signed privileged utun helper + dormant Packet Tunnel target
 core/       C17 DBP/1 codec, destination policy, packet engine (later: lwIP)
 protocol/   DBP/1 wire spec and canonical test vectors (Python generator)
 tools/      check_environment, vector generator, dbp_probe, mock_relay
-macos/      HostApp + PacketTunnel (Swift, later phase)
-android/    Relay app (Kotlin, later phase)
+android/    Cellular-bound relay app (Kotlin)
 docs/       specs, plans, threat model, operations
 ```
 
@@ -32,7 +31,16 @@ make test-core          # configure + build + ctest
 make verify-foundation  # + environment check, protocol vector check, Python tests
 make fuzz-smoke         # 10s libFuzzer run per parser target (needs `brew install llvm` on macOS)
 make check-macos        # assert-based checks for the macOS Shared package (no Xcode needed)
+DROIDBRIDGE_DEVELOPMENT_TEAM=YOUR_TEAM ./scripts/build-signed-macos.sh
 ```
+
+The signed menu-bar app provides device selection, authenticated P-256/SAS pairing, relay health,
+administrator-authorized helper installation, and Start/Stop Tunnel controls. The helper owns utun,
+the default route, and the pf kill switch; startup orders protection before the route change and
+teardown restores the route before removing protection.
+
+Real-device acceptance and operator benchmark setup are documented in
+[`docs/b1-device-acceptance.md`](docs/b1-device-acceptance.md).
 
 Regenerate fixtures after editing `tools/generate_protocol_vectors.py` (the
 canonical source for all wire encodings):

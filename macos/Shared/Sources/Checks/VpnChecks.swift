@@ -61,8 +61,16 @@ func runVpnChecks(_ r: CheckRunner) {
     // provider messages round-trip and metrics cap
     r.check(ProviderMessage.parse(ProviderMessage.reconnect.encoded()) == .reconnect, "provider message round trips")
     r.check(ProviderMessage.parse(Data("{}".utf8)) == nil, "unknown provider message rejected")
-    let snap = TunnelMetricsSnapshot(activeFlows: 3, uploadedBytes: 100, downloadedBytes: 200, carrierName: "C", cellularAvailable: true)
+    let snap = TunnelMetricsSnapshot(
+        activeFlows: 3,
+        uploadedBytes: 100,
+        downloadedBytes: 200,
+        carrierName: "C",
+        cellularAvailable: true,
+        tunnelActive: true
+    )
     r.check((try? ProviderResponse.encodeMetrics(snap)) != nil, "metrics encode under cap")
+    r.check(snap.tunnelActive, "metrics preserve protected tunnel lifecycle")
 
     r.finish("vpn")
 }

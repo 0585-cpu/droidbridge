@@ -43,7 +43,7 @@
 | 1 | `2026-09-21-droidbridge-foundation-protocol-plan.md` | 재현 가능한 저장소, DBP/1 문서·벡터, C codec/policy library, probe client | `protocol/test-vectors/dbp-v1.json`, C ABI, 오류 코드 |
 | 2 | `2026-09-21-droidbridge-android-relay-plan.md` | 실제 Android에서 loopback DBP relay, cellular-bound TCP/DNS, Compose UI | `HELLO`, `OPEN_TCP`, `DNS_QUERY`, health endpoint |
 | 3 | `2026-09-21-droidbridge-macos-control-plane-plan.md` | 메뉴바 앱, ADB 관리, P-256 pairing, Keychain, relay health | App Group runtime config, `RelayControlClient` |
-| 4 | `2026-09-21-droidbridge-packet-tunnel-plan.md` | `NEPacketTunnelProvider`, C/lwIP TCP bridge, virtual DNS, fail-closed data plane | 완전한 B1 tunnel runtime |
+| 4 | `2026-09-21-droidbridge-packet-tunnel-plan.md` + `2026-09-22-droidbridge-utun-helper-app.md` | C/lwIP TCP bridge, virtual DNS, signed utun helper, pf fail-closed data plane | 완전한 B1 tunnel runtime |
 | 5 | `2026-09-21-droidbridge-integration-release-plan.md` | 실기기 수용 시험, 누출·장애·성능 검증, 운영·위협 모델 문서 | B1 debug/release artifact |
 
 ## 실행 체크포인트
@@ -51,7 +51,7 @@
 - [x] **Phase 1 — Foundation:** DBP/1 fixture, C codec/policy, probe와 foundation gate를 통과한다.
 - [x] **Phase 2 — Android Relay:** 실제 Android에서 pairing, cellular-bound TCP/DNS, loopback relay smoke를 통과한다.
 - [x] **Phase 3 — macOS Control Plane:** signed HostApp으로 ADB, pairing, Keychain, authenticated health를 검증한다.
-- [ ] **Phase 4 — Packet Tunnel:** C/lwIP data plane, Network Extension, DNS bridge와 fail-closed preflight를 통과한다.
+- [x] **Phase 4 — Full Tunnel:** C/lwIP data plane, signed utun helper, DNS bridge와 fail-closed build/check gate를 통과한다. 실제 root/device 동작은 Phase 5에서 검증한다.
 - [ ] **Phase 5 — Acceptance:** 실제 기기에서 14개 수용 기준, 1시간 soak, 성능·누출 검증 후에만 `v0.1.0-b1`을 만든다.
 
 ## 계획 간 고정 인터페이스

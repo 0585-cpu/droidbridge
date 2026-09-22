@@ -143,7 +143,8 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
             uploadedBytes: 0,
             downloadedBytes: 0,
             carrierName: nil,
-            cellularAvailable: tunnelController != nil
+            cellularAvailable: tunnelController != nil,
+            tunnelActive: utun != nil || tunnelController != nil
         )
         stateLock.unlock()
         reply((try? JSONEncoder.droidBridge.encode(snapshot)) ?? Data())

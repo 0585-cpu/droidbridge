@@ -47,9 +47,18 @@ benchmark-core:
 verify-data-plane:
 	./scripts/verify-data-plane.sh
 
-.PHONY: b1-preflight build-signed-macos build-android-release
+.PHONY: b1-preflight b1-stress b1-performance b1-soak build-signed-macos build-android-release
 b1-preflight:
 	./scripts/b1-preflight.sh
+
+b1-stress:
+	./scripts/b1-stress.sh
+
+b1-performance:
+	./scripts/b1-performance.sh
+
+b1-soak:
+	./scripts/b1-soak.sh --duration 60m
 
 build-signed-macos:
 	./scripts/build-signed-macos.sh

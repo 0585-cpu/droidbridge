@@ -66,8 +66,8 @@ public final class DroidBridgeCoordinatorAdapter {
     }
 
     public var canPrepareRelay: Bool {
-        guard selectedDevice != nil else { return false }
-        return (try? configStore.read()) != nil
+        guard let selectedDevice, let configured = try? configStore.read() else { return false }
+        return configured.deviceSerial == selectedDevice.serial
     }
 
     public var hasPairing: Bool { (try? configStore.read()) != nil }
@@ -98,6 +98,7 @@ public final class DroidBridgeCoordinatorAdapter {
         } ?? false
         if selectedDevice != nil, !selectedStillPresent {
             self.selectedDevice = nil
+            resolvePairingApproval(false)
         }
 
         if selectedStillPresent {
@@ -171,7 +172,12 @@ public final class DroidBridgeCoordinatorAdapter {
                 keychainAccount: result.peerId,
                 maximumFlows: 128
             )
-            try configStore.write(configuration)
+            do {
+                try configStore.write(configuration)
+            } catch {
+                try? secretStore.delete(peerId: result.peerId)
+                throw error
+            }
             pairedDeviceName = result.displayName
             tunnelMessage = "Paired. Start the Android relay, then prepare it."
             await core.deviceSelected(device)
@@ -300,7 +306,7 @@ public final class DroidBridgeCoordinatorAdapter {
     public func refreshTunnelStatus() async {
         if let metrics = await helper.status() {
             tunnelMetrics = metrics
-            tunnelRunning = metrics.cellularAvailable
+            tunnelRunning = metrics.tunnelActive
             if tunnelRunning { startStatusPolling() }
         }
     }
@@ -331,8 +337,8 @@ public final class DroidBridgeCoordinatorAdapter {
                 guard let self else { return }
                 if let metrics = await helper.status() {
                     tunnelMetrics = metrics
-                    tunnelRunning = metrics.cellularAvailable
-                    if !metrics.cellularAvailable {
+                    tunnelRunning = metrics.tunnelActive
+                    if metrics.tunnelActive && !metrics.cellularAvailable {
                         tunnelMessage = "Tunnel stopped; fail-closed protection may still be active."
                     }
                 }
