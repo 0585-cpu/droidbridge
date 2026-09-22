@@ -16,6 +16,10 @@ targets:
           - Info.plist
           - Helper.entitlements
           - io.droidbridge.helper.plist
+      - path: macos/CoreHost
+    dependencies:
+      - package: DroidBridgeShared
+      - target: DroidBridgeCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.droidbridge.helper
@@ -23,6 +27,11 @@ targets:
         INFOPLIST_FILE: macos/Helper/Info.plist
         MARKETING_VERSION: "0.1.0"
         SWIFT_VERSION: "6.0"
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)/core/include
+        SWIFT_INCLUDE_PATHS:
+          - $(SRCROOT)/core/include
+        OTHER_SWIFT_FLAGS: [-Xcc, -fmodule-map-file=$(SRCROOT)/core/include/module.modulemap]
   DroidBridgeCore:
     type: library.static
     platform: macOS
