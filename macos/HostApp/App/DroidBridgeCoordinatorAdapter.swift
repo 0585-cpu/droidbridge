@@ -214,22 +214,11 @@ public final class DroidBridgeCoordinatorAdapter {
             await core.beginRelayPreparation()
             state = await core.state
 
-            let health = RelayControlClient(
-                secret: secret,
-                connectionFactory: {
-                    let transport = NWConnectionTransport(
-                        host: configuration.relayHost,
-                        port: configuration.relayPort
-                    )
-                    try await transport.start()
-                    return HostDbpConnection(transport: transport)
-                }
+            let preparation = try await prepareRelayConnection(
+                device: device,
+                configuration: configuration,
+                secret: secret
             )
-            let preparation = try await RelayPreparer(
-                adb: adb,
-                healthClient: HostRelayHealthClient(client: health)
-            )
-                .prepare(device: device, secret: secret)
             tunnelMessage = nil
             await core.relayPrepared(serial: device.serial, health: preparation.health)
             state = await core.state
@@ -281,9 +270,36 @@ public final class DroidBridgeCoordinatorAdapter {
             }
             defer { secret.resetBytes(in: 0..<secret.count) }
 
-            try await helper.install()
-            tunnelMessage = "Starting fail-closed tunnel…"
-            try await helper.start(config: configuration, secret: secret)
+            guard let device = selectedDevice,
+                  device.serial == configuration.deviceSerial,
+                  device.state == .authorized
+            else {
+                throw DroidBridgeError.deviceUnauthorized(serial: configuration.deviceSerial)
+            }
+
+            let startup = TunnelStartupSequence(
+                installHelper: {
+                    try await self.helper.install()
+                },
+                prepareRelay: {
+                    self.tunnelMessage = "Rechecking the Android relay before changing routes…"
+                    let preparation = try await self.prepareRelayConnection(
+                        device: device,
+                        configuration: configuration,
+                        secret: secret
+                    )
+                    await self.core.relayPrepared(
+                        serial: device.serial,
+                        health: preparation.health
+                    )
+                    self.state = await self.core.state
+                },
+                startTunnel: {
+                    self.tunnelMessage = "Starting fail-closed tunnel…"
+                    try await self.helper.start(config: configuration, secret: secret)
+                }
+            )
+            try await startup.run()
             tunnelRunning = true
             tunnelMessage = nil
             startStatusPolling()
@@ -309,6 +325,28 @@ public final class DroidBridgeCoordinatorAdapter {
             tunnelRunning = true
             tunnelMessage = error.localizedDescription
         }
+    }
+
+    private func prepareRelayConnection(
+        device: AdbDevice,
+        configuration: TunnelRuntimeConfiguration,
+        secret: Data
+    ) async throws -> RelayPreparation {
+        let health = RelayControlClient(
+            secret: secret,
+            connectionFactory: {
+                let transport = NWConnectionTransport(
+                    host: configuration.relayHost,
+                    port: configuration.relayPort
+                )
+                try await transport.start()
+                return HostDbpConnection(transport: transport)
+            }
+        )
+        return try await RelayPreparer(
+            adb: adb,
+            healthClient: HostRelayHealthClient(client: health)
+        ).prepare(device: device, secret: secret)
     }
 
     public func reconnectTunnel() async {

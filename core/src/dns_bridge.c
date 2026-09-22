@@ -1,5 +1,5 @@
-/* Virtual DNS bridge: intercepts UDP queries to 198.18.0.1:53, hands them to the relay via send_dns,
- * and emits the answer back as a correctly addressed UDP packet. TCP DNS framing lives in dns_tcp.c.
+/* Transparent DNS bridge: intercepts UDP queries, hands them to the relay via send_dns,
+ * and emits the answer with the original resolver address as its source. TCP DNS framing lives in dns_tcp.c.
  * Fixed table of 128 outstanding queries with a 5-second deadline. */
 #include "droidbridge_dns.h"
 #include "droidbridge_packet.h"
@@ -20,13 +20,15 @@ static db_dns_entry_t *find_entry(db_dns_table_t *table, uint32_t query_id) {
     return NULL;
 }
 
-int db_dns_register(db_dns_table_t *table, const uint8_t mac_ip[4], uint16_t mac_port,
-                    uint16_t txid, uint32_t now_ms, uint32_t *out_query_id) {
+int db_dns_register(db_dns_table_t *table, const uint8_t mac_ip[4],
+                    const uint8_t resolver_ip[4], uint16_t mac_port, uint16_t txid,
+                    uint32_t now_ms, uint32_t *out_query_id) {
     for (size_t i = 0; i < DB_DNS_MAX_QUERIES; i++) {
         if (!table->entries[i].in_use) {
             table->entries[i].in_use = 1;
             table->entries[i].query_id = table->next_query_id++;
             memcpy(table->entries[i].mac_ip, mac_ip, 4);
+            memcpy(table->entries[i].resolver_ip, resolver_ip, 4);
             table->entries[i].mac_port = mac_port;
             table->entries[i].txid = txid;
             table->entries[i].deadline_ms = now_ms + DNS_DEADLINE_MS;
@@ -45,7 +47,19 @@ int db_dns_take(db_dns_table_t *table, uint32_t query_id, db_dns_entry_t *out) {
     return 0;
 }
 
-/* Writes an IPv4/UDP DNS packet (src 198.18.0.1:53 -> mac) into `out`; returns length or 0. */
+size_t db_dns_expire(db_dns_table_t *table, uint32_t now_ms) {
+    size_t expired = 0;
+    for (size_t i = 0; i < DB_DNS_MAX_QUERIES; i++) {
+        db_dns_entry_t *entry = &table->entries[i];
+        if (entry->in_use && (int32_t)(now_ms - entry->deadline_ms) >= 0) {
+            memset(entry, 0, sizeof *entry);
+            expired++;
+        }
+    }
+    return expired;
+}
+
+/* Writes an IPv4/UDP DNS packet (original resolver:53 -> mac) into `out`; returns length or 0. */
 size_t db_dns_build_udp_response(const db_dns_entry_t *entry, const uint8_t *dns, size_t dns_len,
                                  uint8_t *out, size_t cap) {
     size_t total = 20 + 8 + dns_len;
@@ -54,7 +68,7 @@ size_t db_dns_build_udp_response(const db_dns_entry_t *entry, const uint8_t *dns
     out[0] = 0x45;
     out[2] = (uint8_t)(total >> 8); out[3] = (uint8_t)total;
     out[8] = 64; out[9] = DB_IPPROTO_UDP;
-    out[12] = DB_GATEWAY_IP0; out[13] = DB_GATEWAY_IP1; out[14] = DB_GATEWAY_IP2; out[15] = DB_GATEWAY_IP3;
+    memcpy(out + 12, entry->resolver_ip, 4);
     memcpy(out + 16, entry->mac_ip, 4);
     uint16_t ipck = db_ipv4_header_checksum(out, 20);
     out[10] = (uint8_t)(ipck >> 8); out[11] = (uint8_t)ipck;

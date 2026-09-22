@@ -17,8 +17,10 @@ final class EngineBridge: @unchecked Sendable {
     let queue = DispatchQueue(label: "io.droidbridge.packet-engine")
     weak var delegate: EngineBridgeDelegate?
     private var engine: OpaquePointer?
+    private let pollTimer: EnginePollTimer
 
     init?(maximumFlows: UInt16 = 128, delegate: EngineBridgeDelegate) {
+        pollTimer = EnginePollTimer(queue: queue)
         self.delegate = delegate
         var config = db_engine_config_t()
         config.maximum_flows = maximumFlows
@@ -34,9 +36,16 @@ final class EngineBridge: @unchecked Sendable {
         config.now_ms = db_bridge_now
         guard let created = db_engine_create(&config) else { return nil }
         engine = created
+        pollTimer.start { [weak self] in
+            guard let self, let engine = self.engine else { return }
+            db_engine_poll(engine)
+        }
     }
 
-    deinit { if let engine { db_engine_destroy(engine) } }
+    deinit {
+        pollTimer.stop()
+        if let engine { db_engine_destroy(engine) }
+    }
 
     /// Feed one IPv4 packet read from the tunnel. Bytes are copied into lwIP synchronously on the queue.
     func ingest(_ packet: Data) {
@@ -47,7 +56,10 @@ final class EngineBridge: @unchecked Sendable {
         }
     }
 
-    func stop() { queue.sync { delegate = nil } }
+    func stop() {
+        pollTimer.stop()
+        queue.sync { delegate = nil }
+    }
 
     func poll() { queue.async { [self] in db_engine_poll(engine) } }
 

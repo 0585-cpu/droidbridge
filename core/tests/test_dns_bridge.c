@@ -42,6 +42,35 @@ static void test_udp_dns_round_trip_preserves_txid_and_source_port(void) {
     harness_destroy(&h);
 }
 
+static void test_udp_dns_to_existing_resolver_is_transparently_bridged(void) {
+    harness_t h; harness_create(&h, 128);
+    uint8_t q[256];
+    size_t n = build_udp_dns_query(q, sizeof q, "198.18.0.2", 53002,
+                                   "10.227.27.245", 53, 0x5678, "example.com");
+    ASSERT_TRUE(n > 0);
+    db_engine_input_packet(h.engine, q, n);
+    ASSERT_EQ_INT(1, h.dns_query_count);
+
+    uint8_t resp[64];
+    memcpy(resp, h.last_dns_query, h.last_dns_query_len);
+    size_t rn = h.last_dns_query_len;
+    resp[2] = 0x81; resp[3] = 0x80; resp[7] = 1;
+    uint8_t answer[] = {0xC0,0x0C,0,1,0,1,0,0,1,44,0,4,93,184,216,34};
+    memcpy(resp + rn, answer, sizeof answer); rn += sizeof answer;
+
+    harness_clear_emitted(&h);
+    ASSERT_EQ_INT(DB_ENGINE_OK, db_engine_on_dns_response(h.engine, h.last_query_id, resp, rn));
+    ASSERT_TRUE(h.emitted_count >= 1);
+    db_ipv4_view_t ip;
+    ASSERT_EQ_INT(DB_PACKET_OK,
+                  db_ipv4_parse(h.emitted[0].bytes, h.emitted[0].len, &ip));
+    uint8_t original_resolver[4] = {10,227,27,245};
+    if (memcmp(ip.src, original_resolver, 4) != 0) {
+        FAIL_AT("dns response must preserve the original resolver address%s", "");
+    }
+    harness_destroy(&h);
+}
+
 static void test_mismatched_txid_and_oversize_rejected(void) {
     harness_t h; harness_create(&h, 128);
     uint8_t q[256];
@@ -74,14 +103,48 @@ static void test_malformed_and_non_dns_udp_dropped(void) {
 
 static void test_dns_table_full_returns_error(void) {
     db_dns_table_t table; db_dns_table_init(&table);
-    uint8_t mac[4]={198,18,0,2}; uint32_t id;
-    for (int i = 0; i < DB_DNS_MAX_QUERIES; i++) ASSERT_EQ_INT(0, db_dns_register(&table, mac, 1000, 1, 0, &id));
-    ASSERT_EQ_INT(-1, db_dns_register(&table, mac, 1000, 1, 0, &id));
+    uint8_t mac[4]={198,18,0,2}; uint8_t resolver[4]={10,227,27,245}; uint32_t id;
+    for (int i = 0; i < DB_DNS_MAX_QUERIES; i++) ASSERT_EQ_INT(0, db_dns_register(&table, mac, resolver, 1000, 1, 0, &id));
+    ASSERT_EQ_INT(-1, db_dns_register(&table, mac, resolver, 1000, 1, 0, &id));
+}
+
+static void test_timed_out_dns_queries_release_engine_slots(void) {
+    harness_t h; harness_create(&h, 128);
+    uint8_t q[256];
+    size_t n = build_udp_dns_query(q, sizeof q, "198.18.0.2", 53003,
+                                   "10.227.27.245", 53, 0x2468, "timeout.test");
+    ASSERT_TRUE(n > 0);
+
+    for (int i = 0; i < DB_DNS_MAX_QUERIES; i++) {
+        db_engine_input_packet(h.engine, q, n);
+    }
+    ASSERT_EQ_INT(DB_DNS_MAX_QUERIES, h.dns_query_count);
+
+    db_engine_input_packet(h.engine, q, n);
+    ASSERT_EQ_INT(DB_DNS_MAX_QUERIES, h.dns_query_count);
+
+    h.now_ms = 5000;
+    db_engine_poll(h.engine);
+    db_engine_input_packet(h.engine, q, n);
+    ASSERT_EQ_INT(DB_DNS_MAX_QUERIES + 1, h.dns_query_count);
+    harness_destroy(&h);
+}
+
+static void test_dns_expiry_is_wrap_safe(void) {
+    db_dns_table_t table; db_dns_table_init(&table);
+    uint8_t mac[4]={198,18,0,2}; uint8_t resolver[4]={10,227,27,245}; uint32_t id;
+    ASSERT_EQ_INT(0, db_dns_register(&table, mac, resolver, 1000, 1,
+                                    UINT32_MAX - 1000u, &id));
+    ASSERT_EQ_INT(0, (int)db_dns_expire(&table, 3000u));
+    ASSERT_EQ_INT(1, (int)db_dns_expire(&table, 3999u));
 }
 
 void run_dns_bridge_tests(void) {
     RUN(test_udp_dns_round_trip_preserves_txid_and_source_port);
+    RUN(test_udp_dns_to_existing_resolver_is_transparently_bridged);
     RUN(test_mismatched_txid_and_oversize_rejected);
     RUN(test_malformed_and_non_dns_udp_dropped);
     RUN(test_dns_table_full_returns_error);
+    RUN(test_timed_out_dns_queries_release_engine_slots);
+    RUN(test_dns_expiry_is_wrap_safe);
 }

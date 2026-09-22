@@ -26,6 +26,7 @@ typedef struct {
     uint32_t last_query_id;
     uint8_t last_dns_query[512];
     size_t last_dns_query_len;
+    uint32_t now_ms;
     int close_count;
     db_close_reason_t last_close_reason;
     /* single-flow seq tracking for building packets */

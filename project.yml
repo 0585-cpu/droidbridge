@@ -64,6 +64,9 @@ targets:
       - path: macos/Helper/RouteController.swift
       - path: macos/Helper/PfController.swift
       - path: macos/Helper/HelperRecoveryStateStore.swift
+      - path: macos/HostApp/Helper/ManualHelperInstaller.swift
+      - path: macos/CoreHost/EnginePollTimer.swift
+      - path: macos/HostApp/Tunnel/TunnelStartupSequence.swift
     dependencies:
       - package: DroidBridgeShared
     settings:

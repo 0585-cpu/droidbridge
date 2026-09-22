@@ -31,6 +31,7 @@ struct ManualHelperInstaller: Sendable {
     private static let relativeDirectory = "Contents/Library/LaunchDaemons"
     private static let helperName = "DroidBridgeHelper"
     private static let plistName = "io.droidbridge.helper.plist"
+    static let machServicePlistKeyPath = #"MachServices.io\.droidbridge\.helper"#
 
     private let bundleURL: URL
     private let runner: any ProcessRunning
@@ -68,6 +69,7 @@ struct ManualHelperInstaller: Sendable {
             arguments: [
                 "-e", Self.appleScript,
                 "--", helperURL.path, plistURL.path, helperRequirement, plistDigest,
+                Self.machServicePlistKeyPath,
             ],
             environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
         )
@@ -78,6 +80,22 @@ struct ManualHelperInstaller: Sendable {
                 message: message.isEmpty ? "osascript exited with status \(result.exitCode)" : message
             )
         }
+    }
+
+    func installedHelperMatchesEmbedded(
+        at installedURL: URL = URL(
+            fileURLWithPath: "/Library/PrivilegedHelperTools/io.droidbridge.helper"
+        )
+    ) -> Bool {
+        let embeddedURL = bundleURL
+            .appendingPathComponent(Self.relativeDirectory)
+            .appendingPathComponent(Self.helperName)
+        guard let embedded = try? Data(contentsOf: embeddedURL, options: .mappedIfSafe),
+              let installed = try? Data(contentsOf: installedURL, options: .mappedIfSafe)
+        else {
+            return false
+        }
+        return SHA256.hash(data: embedded) == SHA256.hash(data: installed)
     }
 
     /// Removes only a fully stopped helper. The root-side script refuses to
@@ -139,11 +157,12 @@ struct ManualHelperInstaller: Sendable {
 
     private static let appleScript = #"""
 on run argv
-    if (count of argv) is not 4 then error "invalid installer arguments"
+    if (count of argv) is not 5 then error "invalid installer arguments"
     set helperSource to item 1 of argv
     set plistSource to item 2 of argv
     set helperRequirement to item 3 of argv
     set expectedPlistDigest to item 4 of argv
+    set machServiceKeyPath to item 5 of argv
     set helperDestination to "/Library/PrivilegedHelperTools/io.droidbridge.helper"
     set plistDestination to "/Library/LaunchDaemons/io.droidbridge.helper.plist"
     set helperStage to helperDestination & ".new"
@@ -164,7 +183,7 @@ on run argv
     set commandText to commandText & " && test \"$(/usr/bin/shasum -a 256 " & quoted form of plistStage & " | /usr/bin/awk '{print $1}')\" = " & quoted form of expectedPlistDigest
     set commandText to commandText & " && test \"$(/usr/bin/plutil -extract Label raw -o - " & quoted form of plistStage & ")\" = io.droidbridge.helper"
     set commandText to commandText & " && test \"$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - " & quoted form of plistStage & ")\" = /Library/PrivilegedHelperTools/io.droidbridge.helper"
-    set commandText to commandText & " && test \"$(/usr/bin/plutil -extract MachServices.io.droidbridge.helper raw -o - " & quoted form of plistStage & ")\" = true"
+    set commandText to commandText & " && test \"$(/usr/bin/plutil -extract " & quoted form of machServiceKeyPath & " raw -o - " & quoted form of plistStage & ")\" = true"
     set commandText to commandText & " && /bin/mv -f " & quoted form of helperStage & " " & quoted form of helperDestination
     set commandText to commandText & " && /bin/mv -f " & quoted form of plistStage & " " & quoted form of plistDestination
     set commandText to commandText & " && if /bin/launchctl print system/io.droidbridge.helper >/dev/null 2>&1; then /bin/launchctl bootout system/io.droidbridge.helper >/dev/null 2>&1 || { echo 'could not unregister the previous DroidBridge helper' >&2; exit 71; }; fi"

@@ -275,9 +275,9 @@ void db_engine_destroy(db_engine_t *e) {
     if (e->flows) {
         for (uint16_t i = 0; i < e->config.maximum_flows; i++)
             if (e->flows[i].state != FLOW_FREE) free_flow(&e->flows[i]);
-        free(e->flows);
     }
     if (e->lwip) db_lwip_shutdown(e->lwip);
+    free(e->flows);
     if (e->flow_table) db_flow_table_destroy(e->flow_table);
     free(e);
 }
@@ -303,21 +303,19 @@ static void emit_rst_for_syn(db_engine_t *e, const uint8_t *packet, size_t lengt
     e->config.emit_packet(e->config.context, rst, 40);
 }
 
-/* Intercept UDP DNS to 198.18.0.1:53. Any other UDP is dropped (B1 forwards no general UDP). */
+/* Transparently intercept UDP DNS to any resolver. Any other UDP is dropped (B1 forwards no general UDP). */
 static db_engine_status_t engine_handle_udp(db_engine_t *e, const uint8_t *packet, size_t length, const db_ipv4_view_t *ip) {
     size_t udp_off = ip->header_length;
     if (udp_off + 8 > ip->total_length) return DB_ENGINE_OK;
     const uint8_t *udp = packet + udp_off;
     uint16_t dst_port = ((uint16_t)udp[2] << 8) | udp[3];
     if (dst_port != 53) return DB_ENGINE_OK; /* not DNS: drop */
-    if (ip->dst[0] != DB_GATEWAY_IP0 || ip->dst[1] != DB_GATEWAY_IP1 ||
-        ip->dst[2] != DB_GATEWAY_IP2 || ip->dst[3] != DB_GATEWAY_IP3) return DB_ENGINE_OK;
     uint16_t src_port = ((uint16_t)udp[0] << 8) | udp[1];
     const uint8_t *dns = udp + 8;
     size_t dns_len = ip->total_length - udp_off - 8;
     if (!db_dns_valid(dns, dns_len)) return DB_ENGINE_OK; /* malformed: drop, no reflect */
     uint32_t query_id;
-    if (db_dns_register(&e->dns, ip->src, src_port, db_dns_transaction_id(dns),
+    if (db_dns_register(&e->dns, ip->src, ip->dst, src_port, db_dns_transaction_id(dns),
                         e->config.now_ms ? e->config.now_ms(e->config.context) : 0, &query_id) != 0) {
         return DB_ENGINE_OK; /* table full: drop */
     }
@@ -395,7 +393,13 @@ db_engine_status_t db_engine_input_packet(db_engine_t *e, const uint8_t *packet,
     return DB_ENGINE_OK;
 }
 
-void db_engine_poll(db_engine_t *e) { if (e) db_lwip_poll(e->lwip); }
+void db_engine_poll(db_engine_t *e) {
+    if (e == NULL) return;
+    if (e->config.now_ms != NULL) {
+        db_dns_expire(&e->dns, e->config.now_ms(e->config.context));
+    }
+    db_lwip_poll(e->lwip);
+}
 
 db_engine_status_t db_engine_on_relay_opened(db_engine_t *e, db_flow_id_t flow) {
     if (e == NULL) return DB_ENGINE_ERR_ARGUMENT;

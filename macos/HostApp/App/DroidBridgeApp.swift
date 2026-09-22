@@ -25,9 +25,12 @@ struct DroidBridgeApp: App {
         let core = DroidBridgeCoordinatorCore(adb: adb, secretStore: secretStore)
         let fallback = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/DroidBridge", isDirectory: true)
-        let configurationDirectory = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: "group.io.droidbridge.shared"
-        ) ?? fallback
+        let configurationDirectory = RuntimeConfigurationDirectoryResolver.resolve(
+            appGroupContainer: FileManager.default.containerURL(
+                forSecurityApplicationGroupIdentifier: "group.io.droidbridge.shared"
+            ),
+            fallbackDirectory: fallback
+        )
         return DroidBridgeCoordinatorAdapter(
             core: core,
             devices: { (try? await adb.devices()) ?? [] },

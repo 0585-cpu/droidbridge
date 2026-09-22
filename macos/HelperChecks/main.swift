@@ -27,6 +27,27 @@ private final class ScriptedRunner {
     var isEmpty: Bool { commands.isEmpty }
 }
 
+private final class PollCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func increment() -> Int {
+        lock.withLock {
+            value += 1
+            return value
+        }
+    }
+
+    var current: Int { lock.withLock { value } }
+}
+
+private actor StartupOrderRecorder {
+    private var events: [String] = []
+
+    func append(_ event: String) { events.append(event) }
+    var recorded: [String] { events }
+}
+
 private func result(_ status: Int32 = 0, _ output: String = "") -> HelperCommandResult {
     HelperCommandResult(
         status: status,
@@ -169,13 +190,116 @@ private func testPendingPfJournalCanBeRecovered() throws {
     check(runner.isEmpty, "pending PF recovery should flush the anchor")
 }
 
+private func testInstallerMachServiceKeyPathIsAcceptedByPlutil() throws {
+    let plist = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent("macos/Helper/io.droidbridge.helper.plist")
+    let output = Pipe()
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/plutil")
+    process.arguments = [
+        "-extract", ManualHelperInstaller.machServicePlistKeyPath,
+        "raw", "-o", "-", plist.path,
+    ]
+    process.standardOutput = output
+    process.standardError = output
+    try process.run()
+    process.waitUntilExit()
+    let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    check(process.terminationStatus == 0 && text == "true",
+          "the installer Mach service key path must resolve to true")
+}
+
+private func testInstallerDetectsStaleInstalledHelper() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("droidbridge-installer-digest-\(UUID().uuidString)", isDirectory: true)
+    let embeddedDirectory = directory
+        .appendingPathComponent("DroidBridge.app/Contents/Library/LaunchDaemons", isDirectory: true)
+    try FileManager.default.createDirectory(at: embeddedDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let bundle = directory.appendingPathComponent("DroidBridge.app", isDirectory: true)
+    let embedded = embeddedDirectory.appendingPathComponent("DroidBridgeHelper")
+    let installed = directory.appendingPathComponent("io.droidbridge.helper")
+    try Data("new helper".utf8).write(to: embedded)
+    try Data("old helper".utf8).write(to: installed)
+
+    let installer = ManualHelperInstaller(bundleURL: bundle)
+    check(!installer.installedHelperMatchesEmbedded(at: installed),
+          "different helper binaries must require an update even when versions match")
+
+    try Data("new helper".utf8).write(to: installed)
+    check(installer.installedHelperMatchesEmbedded(at: installed),
+          "identical helper binaries should not require an update")
+}
+
+private func testEnginePollTimerRunsAndStops() {
+    let queue = DispatchQueue(label: "io.droidbridge.checks.engine-poll")
+    let timer = EnginePollTimer(queue: queue, interval: .milliseconds(20))
+    let counter = PollCounter()
+    let reachedThree = DispatchSemaphore(value: 0)
+
+    timer.start {
+        if counter.increment() == 3 { reachedThree.signal() }
+    }
+    check(reachedThree.wait(timeout: .now() + .seconds(1)) == .success,
+          "the engine timer must poll repeatedly while running")
+
+    timer.stop()
+    queue.sync {}
+    let stoppedAt = counter.current
+    Thread.sleep(forTimeInterval: 0.1)
+    queue.sync {}
+    check(counter.current == stoppedAt, "the engine timer must stop polling after cancellation")
+}
+
+@MainActor
+private func testTunnelStartupPreflightsBeforeRouteMutation() async {
+    let success = StartupOrderRecorder()
+    let sequence = TunnelStartupSequence(
+        installHelper: { await success.append("install") },
+        prepareRelay: { await success.append("prepare") },
+        startTunnel: { await success.append("start") }
+    )
+    do {
+        try await sequence.run()
+        let events = await success.recorded
+        check(events == ["install", "prepare", "start"],
+              "startup must revalidate the relay immediately before route mutation")
+    } catch {
+        check(false, "successful startup sequence should not throw")
+    }
+
+    let failed = StartupOrderRecorder()
+    let rejected = TunnelStartupSequence(
+        installHelper: { await failed.append("install") },
+        prepareRelay: {
+            await failed.append("prepare")
+            throw DroidBridgeError.relayTimedOut
+        },
+        startTunnel: { await failed.append("start") }
+    )
+    do {
+        try await rejected.run()
+        check(false, "failed relay preflight must reject startup")
+    } catch {
+        let events = await failed.recorded
+        check(events == ["install", "prepare"],
+              "route mutation must not run after relay preflight failure")
+    }
+}
+
 do {
     try testRouteRestoreRetryDoesNotRedeleteUtun()
     try testPersistedRouteRecoveryIsIdempotent()
     try testRecoveryStateStoreRoundTrip()
     try testPfReleaseFailureRetainsTokenForRetry()
     try testPendingPfJournalCanBeRecovered()
-    print("helper checks: 5 passed, 0 failed")
+    try testInstallerMachServiceKeyPathIsAcceptedByPlutil()
+    try testInstallerDetectsStaleInstalledHelper()
+    testEnginePollTimerRunsAndStops()
+    await testTunnelStartupPreflightsBeforeRouteMutation()
+    print("helper checks: 9 passed, 0 failed")
 } catch {
     FileHandle.standardError.write(Data("FAIL: \(error.localizedDescription)\n".utf8))
     exit(EXIT_FAILURE)

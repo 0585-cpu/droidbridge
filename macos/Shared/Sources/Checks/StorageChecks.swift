@@ -33,6 +33,46 @@ func runStorageChecks(_ r: CheckRunner) {
     } catch {
         r.check(false, "runtime store write failed: \(error)")
     }
+
+    let writableCandidate = FileManager.default.temporaryDirectory
+        .appendingPathComponent("dbcfg-resolver-primary-\(UUID().uuidString)")
+    let unusedFallback = FileManager.default.temporaryDirectory
+        .appendingPathComponent("dbcfg-resolver-fallback-\(UUID().uuidString)")
+    let resolvedWritableDirectory = RuntimeConfigurationDirectoryResolver.resolve(
+        appGroupContainer: writableCandidate,
+        fallbackDirectory: unusedFallback
+    )
+    r.check(resolvedWritableDirectory == writableCandidate,
+            "runtime directory resolver accepts an atomically writable primary")
+    try? FileManager.default.removeItem(at: writableCandidate)
+
+    if ProcessInfo.processInfo.environment["DROIDBRIDGE_APP_GROUP_INTEGRATION"] == "1" {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: "group.io.droidbridge.shared"
+        ) else {
+            r.check(false, "signed storage check can open the app group container")
+            r.finish("storage")
+            return
+        }
+        let uniqueName = "StorageChecks-\(UUID().uuidString)"
+        let appGroupCandidate = container.appendingPathComponent(uniqueName)
+        let fallbackDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DroidBridgeFallback-\(UUID().uuidString)")
+        let selectedDirectory = RuntimeConfigurationDirectoryResolver.resolve(
+            appGroupContainer: appGroupCandidate,
+            fallbackDirectory: fallbackDirectory
+        )
+        let appGroupStore = FileRuntimeConfigurationStore(directory: selectedDirectory)
+        do {
+            try appGroupStore.write(config)
+            r.check((try? appGroupStore.read()) == config,
+                    "runtime write succeeds when the app group is unavailable")
+        } catch {
+            r.check(false, "resolved runtime write failed: \(error)")
+        }
+        try? FileManager.default.removeItem(at: appGroupCandidate)
+        try? FileManager.default.removeItem(at: fallbackDirectory)
+    }
     try? FileManager.default.removeItem(at: dir)
     r.finish("storage")
 }

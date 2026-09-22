@@ -46,10 +46,10 @@ public final class HelperClient: @unchecked Sendable {
     }
 
     public func install() async throws {
-        if await installationStatus() { return }
+        if await installationStatus(), installer.installedHelperMatchesEmbedded() { return }
         try await installer.install()
         for _ in 0..<30 {
-            if await installationStatus() { return }
+            if await installationStatus(), installer.installedHelperMatchesEmbedded() { return }
             try await Task.sleep(for: .milliseconds(100))
         }
         throw HelperClientError.unavailable

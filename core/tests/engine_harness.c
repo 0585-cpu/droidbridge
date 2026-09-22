@@ -44,7 +44,7 @@ static void cb_dns(void *ctx, db_flow_id_t flow, const uint8_t *q, size_t len) {
     if (len <= sizeof h->last_dns_query) { memcpy(h->last_dns_query, q, len); h->last_dns_query_len = len; }
 }
 static uint32_t cb_rand(void *ctx) { (void)ctx; return 0x12345678u; }
-static uint32_t cb_now(void *ctx) { (void)ctx; return 0; }
+static uint32_t cb_now(void *ctx) { return ((harness_t *)ctx)->now_ms; }
 
 void harness_create(harness_t *h, uint16_t max_flows) {
     memset(h, 0, sizeof *h);
