@@ -63,9 +63,14 @@ class PairingServer(private val port: Int = DEFAULT_PORT) {
     val boundPort: Int get() = serverSocket?.localPort ?: -1
 
     fun open() {
-        serverSocket = ServerSocket().apply {
-            reuseAddress = false
-            bind(InetSocketAddress(InetAddress.getLoopbackAddress(), port), 1)
+        val socket = ServerSocket()
+        try {
+            socket.reuseAddress = true
+            socket.bind(InetSocketAddress(InetAddress.getLoopbackAddress(), port), 1)
+            serverSocket = socket
+        } catch (error: IOException) {
+            try { socket.close() } catch (_: IOException) { /* bind already failed */ }
+            throw error
         }
     }
 

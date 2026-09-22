@@ -21,5 +21,9 @@ func runConfigurationChecks(_ r: CheckRunner) {
     r.expectThrows("flows 0") { try valid(0) }
     r.expectThrows("flows 257") { try valid(257) }
     r.check((try? valid(256)) != nil, "flows 256 allowed")
+    r.check(
+        RuntimeSigningIdentity.keychainAccessGroup(teamID: "TEAM123") == "TEAM123.io.droidbridge.shared",
+        "keychain access group includes the signing team prefix"
+    )
     r.finish("configuration")
 }

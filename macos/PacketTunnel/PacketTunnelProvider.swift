@@ -15,7 +15,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             completionHandler(DroidBridgeError.invalidConfiguration("missing runtime config"))
             return
         }
-        let store = KeychainPairingSecretStore(accessGroup: "io.droidbridge.shared")
+        guard let keychainAccessGroup = RuntimeSigningIdentity.keychainAccessGroup() else {
+            completionHandler(DroidBridgeError.invalidConfiguration("missing signing team identifier"))
+            return
+        }
+        let store = KeychainPairingSecretStore(accessGroup: keychainAccessGroup)
         guard let secret = try? store.load(peerId: config.keychainAccount), secret.count == 32 else {
             completionHandler(DroidBridgeError.secretWrongLength)
             return

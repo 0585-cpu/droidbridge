@@ -5,6 +5,7 @@ import io.droidbridge.pairing.PairingCoordinator
 import io.droidbridge.pairing.PairingServer
 import io.droidbridge.pairing.PairingUiState
 import io.droidbridge.security.PairingSecretStore
+import java.io.IOException
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,7 +32,14 @@ class AppPairingFacade(
 
     override fun beginPairing() {
         cancel()
-        val pairingServer = PairingServer().also { it.open() }
+        val pairingServer = PairingServer()
+        try {
+            pairingServer.open()
+        } catch (_: IOException) {
+            pairingServer.close()
+            _state.value = PairingUiState.Failed("pairing port unavailable")
+            return
+        }
         server = pairingServer
         val coord = PairingCoordinator(
             store = store,

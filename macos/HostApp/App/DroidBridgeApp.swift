@@ -18,7 +18,10 @@ struct DroidBridgeApp: App {
     private static func makeAdapter() -> DroidBridgeCoordinatorAdapter {
         let executable = (try? AdbExecutableLocator().locate()) ?? URL(fileURLWithPath: "/opt/homebrew/bin/adb")
         let adb = AdbClient(executable: executable, runner: FoundationProcessRunner())
-        let secretStore = KeychainPairingSecretStore(accessGroup: "io.droidbridge.shared")
+        guard let keychainAccessGroup = RuntimeSigningIdentity.keychainAccessGroup() else {
+            preconditionFailure("DroidBridgeTeamIdentifier is missing or invalid")
+        }
+        let secretStore = KeychainPairingSecretStore(accessGroup: keychainAccessGroup)
         let core = DroidBridgeCoordinatorCore(adb: adb, secretStore: secretStore)
         let fallback = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/DroidBridge", isDirectory: true)

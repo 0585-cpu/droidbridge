@@ -84,6 +84,14 @@ func runAdbChecks(_ r: CheckRunner) async {
     r.check((try? locator.locate())?.path == "/sdk/platform-tools/adb", "locator prefers ANDROID_HOME")
     let brew = AdbExecutableLocator(environment: [:], fileExists: { $0 == "/opt/homebrew/bin/adb" })
     r.check((try? brew.locate())?.path == "/opt/homebrew/bin/adb", "locator falls back to homebrew")
+    let androidStudioDefault = AdbExecutableLocator(
+        environment: ["HOME": "/Users/tester"],
+        fileExists: { $0 == "/Users/tester/Library/Android/sdk/platform-tools/adb" }
+    )
+    r.check(
+        (try? androidStudioDefault.locate())?.path == "/Users/tester/Library/Android/sdk/platform-tools/adb",
+        "locator finds the default macOS Android SDK outside a shell environment"
+    )
     let none = AdbExecutableLocator(environment: [:], fileExists: { _ in false })
     do { _ = try none.locate(); r.check(false, "missing adb throws") } catch { r.check(true, "missing adb throws") }
 

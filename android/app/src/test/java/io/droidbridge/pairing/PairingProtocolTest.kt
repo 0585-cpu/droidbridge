@@ -1,6 +1,7 @@
 package io.droidbridge.pairing
 
 import io.droidbridge.security.InMemoryPairingSecretStore
+import java.io.IOException
 import java.security.KeyPair
 import java.security.SecureRandom
 import kotlinx.coroutines.CompletableDeferred
@@ -8,6 +9,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -146,6 +148,32 @@ class PairingProtocolTest {
         job.join()
         assertEquals(PairingUiState.Closed, h.coordinator.state.value)
         assertNull(h.store.load())
+    }
+
+    @Test
+    fun `cancelling a socket accept cannot publish a connection failure`() = coordinatorTest { scope ->
+        val entered = CompletableDeferred<Unit>()
+        val coordinator = PairingCoordinator(
+            store = InMemoryPairingSecretStore(),
+            acceptChannel = {
+                entered.complete(Unit)
+                try {
+                    awaitCancellation()
+                } finally {
+                    throw IOException("listener closed")
+                }
+            },
+            scope = scope,
+            androidPeerId = "android-1",
+            androidDisplayName = "Pixel",
+        )
+        val job = coordinator.openWindow(5.seconds)
+        entered.await()
+
+        coordinator.cancel()
+        job.join()
+
+        assertEquals(PairingUiState.Closed, coordinator.state.value)
     }
 
     @Test

@@ -15,6 +15,7 @@ public struct AdbExecutableLocator: Sendable {
         var candidates: [String] = []
         if let home = environment["ANDROID_HOME"] { candidates.append("\(home)/platform-tools/adb") }
         if let root = environment["ANDROID_SDK_ROOT"] { candidates.append("\(root)/platform-tools/adb") }
+        if let home = environment["HOME"] { candidates.append("\(home)/Library/Android/sdk/platform-tools/adb") }
         candidates.append("/opt/homebrew/bin/adb")
         candidates.append("/usr/local/bin/adb")
         for dir in (environment["PATH"] ?? "").split(separator: ":") { candidates.append("\(dir)/adb") }

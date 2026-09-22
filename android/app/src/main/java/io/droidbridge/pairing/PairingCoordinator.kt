@@ -8,6 +8,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -55,6 +57,7 @@ class PairingCoordinator(
             } catch (e: PairingException) {
                 _state.value = PairingUiState.Failed(e.message ?: "pairing failed")
             } catch (e: java.io.IOException) {
+                currentCoroutineContext().ensureActive()
                 _state.value = PairingUiState.Failed("connection error")
             } finally {
                 channel?.close()
