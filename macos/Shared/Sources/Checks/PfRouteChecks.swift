@@ -10,6 +10,13 @@ func runPfRouteChecks(_ r: CheckRunner) {
 
     let commands = RouteCommandBuilder(utun: "utun4")
     r.check(
+        commands.setDefault(gateway: "192.168.0.1") == [
+            ["route", "-n", "delete", "-inet", "default", "192.168.0.1"],
+            ["route", "-n", "add", "-inet", "default", "-interface", "utun4"],
+        ],
+        "original default is removed before the utun default is added"
+    )
+    r.check(
         commands.setDefault().contains(["route", "-n", "add", "-inet", "default", "-interface", "utun4"]),
         "default route targets utun"
     )
@@ -17,6 +24,21 @@ func runPfRouteChecks(_ r: CheckRunner) {
         commands.restoreDefault(gateway: "192.168.0.1").contains(["route", "-n", "add", "-inet", "default", "192.168.0.1"]),
         "original gateway is restored"
     )
+
+    let hardwarePorts = """
+    Hardware Port: Wi-Fi
+    Device: en0
+    Ethernet Address: 00:11:22:33:44:55
+
+    Hardware Port: Thunderbolt Ethernet
+    Device: en5
+    Ethernet Address: 00:11:22:33:44:66
+    """
+    r.check(
+        NetworkHardwarePortParser.interfaces(from: hardwarePorts) == ["en0", "en5"],
+        "physical interface parser extracts networksetup devices"
+    )
+    r.check(NetworkHardwarePortParser.isSafeInterfaceName("en0"), "accepts a kernel interface name")
+    r.check(!NetworkHardwarePortParser.isSafeInterfaceName("en0\nblock all"), "rejects pf rule injection")
     r.finish("pf and route")
 }
-

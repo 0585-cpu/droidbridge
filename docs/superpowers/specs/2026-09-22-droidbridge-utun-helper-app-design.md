@@ -123,7 +123,9 @@ array. B1 is IPv4-only; IPv6 frames are dropped (parity with the existing engine
 
 ## 7. Kill-Switch / Fail-Closed (pf)
 
-A pf anchor `io.droidbridge` holds the ruleset (conceptually):
+A pf anchor `com.apple/io.droidbridge` holds the ruleset (conceptually). The
+`com.apple/` namespace is required because the stock macOS `/etc/pf.conf` evaluates
+the `com.apple/*` wildcard anchor:
 - `pass on lo0` — relay path is loopback `127.0.0.1:27183` (adb forward).
 - `pass on utunN` — the healthy tunnel path.
 - `block drop out on { en0, en1, … physical interfaces }` — every other egress denied.
@@ -154,7 +156,7 @@ There is never a window in which traffic can leave a physical interface unprotec
   low-level core.
 - `macos/Helper/RouteController.swift` — default-route swap/restore (`route`), relay/local
   exceptions.
-- `macos/Helper/PfController.swift` — load/flush the `io.droidbridge` pf anchor.
+- `macos/Helper/PfController.swift` — load/flush the `com.apple/io.droidbridge` pf anchor.
 - `macos/Helper/HelperService.swift` — XPC implementation + peer code-signature validation.
 - `macos/Helper/{Info.plist, launchd.plist, Helper.entitlements}` — no NE entitlement.
 - `macos/Shared/.../XPC/DroidBridgeHelperProtocol.swift` — shared XPC protocol.

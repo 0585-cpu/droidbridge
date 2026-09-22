@@ -1,6 +1,6 @@
 import Foundation
 
-/// Builds the fail-closed `io.droidbridge` pf anchor body.
+/// Builds the fail-closed `com.apple/io.droidbridge` pf anchor body.
 public struct PfRuleBuilder: Sendable {
     public let utun: String
     public let physical: [String]
@@ -20,4 +20,3 @@ public struct PfRuleBuilder: Sendable {
         return lines.joined(separator: "\n") + "\n"
     }
 }
-

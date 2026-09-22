@@ -26,8 +26,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             guard let self else { return }
             if let error { completionHandler(error); return }
             let controller = TunnelController(packetSource: NEPacketFlowSource(self.packetFlow), secret: secret,
-                                              relayHost: config.relayHost, relayPort: config.relayPort)
-            controller.start()
+                                              relayHost: config.relayHost, relayPort: config.relayPort,
+                                              maximumFlows: config.maximumFlows)
+            guard controller.start() else {
+                completionHandler(DroidBridgeError.invalidConfiguration("packet engine initialization failed"))
+                return
+            }
             self.controller = controller
             let monitor = RelayHealthMonitor(secret: secret,
                 onReady: { _ in }, onUnavailable: { /* fail closed: keep settings, engine drops packets */ })

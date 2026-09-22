@@ -13,7 +13,7 @@ protocol EngineBridgeDelegate: AnyObject {
 
 /// Thread-safe wrapper around the C data-plane engine. Every C call and callback runs on one serial
 /// queue, so the engine stays single-threaded as its contract requires.
-final class EngineBridge {
+final class EngineBridge: @unchecked Sendable {
     let queue = DispatchQueue(label: "io.droidbridge.packet-engine")
     weak var delegate: EngineBridgeDelegate?
     private var engine: OpaquePointer?
@@ -40,22 +40,24 @@ final class EngineBridge {
 
     /// Feed one IPv4 packet read from the tunnel. Bytes are copied into lwIP synchronously on the queue.
     func ingest(_ packet: Data) {
-        queue.async { [engine] in
+        queue.async { [self] in
             packet.withUnsafeBytes { raw in
                 _ = db_engine_input_packet(engine, raw.bindMemory(to: UInt8.self).baseAddress, packet.count)
             }
         }
     }
 
-    func poll() { queue.async { [engine] in db_engine_poll(engine) } }
+    func stop() { queue.sync { delegate = nil } }
 
-    func relayOpened(_ flow: UInt32) { queue.async { [engine] in _ = db_engine_on_relay_opened(engine, flow) } }
-    func relayOpenFailed(_ flow: UInt32) { queue.async { [engine] in _ = db_engine_on_relay_open_failed(engine, flow) } }
-    func relayWritable(_ flow: UInt32) { queue.async { [engine] in _ = db_engine_on_relay_writable(engine, flow) } }
-    func relayClosed(_ flow: UInt32, isError: Bool) { queue.async { [engine] in _ = db_engine_on_relay_closed(engine, flow, isError ? 1 : 0) } }
+    func poll() { queue.async { [self] in db_engine_poll(engine) } }
+
+    func relayOpened(_ flow: UInt32) { queue.async { [self] in _ = db_engine_on_relay_opened(engine, flow) } }
+    func relayOpenFailed(_ flow: UInt32) { queue.async { [self] in _ = db_engine_on_relay_open_failed(engine, flow) } }
+    func relayWritable(_ flow: UInt32) { queue.async { [self] in _ = db_engine_on_relay_writable(engine, flow) } }
+    func relayClosed(_ flow: UInt32, isError: Bool) { queue.async { [self] in _ = db_engine_on_relay_closed(engine, flow, isError ? 1 : 0) } }
 
     func relayData(_ flow: UInt32, _ data: Data) {
-        queue.async { [engine] in
+        queue.async { [self] in
             data.withUnsafeBytes { raw in
                 _ = db_engine_on_relay_data(engine, flow, raw.bindMemory(to: UInt8.self).baseAddress, data.count)
             }
@@ -63,14 +65,14 @@ final class EngineBridge {
     }
 
     func dnsResponse(_ query: UInt32, _ response: Data) {
-        queue.async { [engine] in
+        queue.async { [self] in
             response.withUnsafeBytes { raw in
                 _ = db_engine_on_dns_response(engine, query, raw.bindMemory(to: UInt8.self).baseAddress, response.count)
             }
         }
     }
 
-    var activeFlows: Int { queue.sync { [engine] in db_engine_active_flow_count(engine) } }
+    var activeFlows: Int { queue.sync { db_engine_active_flow_count(engine) } }
 }
 
 extension EngineBridge: PacketIngesting {}

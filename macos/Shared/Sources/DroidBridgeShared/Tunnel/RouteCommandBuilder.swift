@@ -8,8 +8,13 @@ public struct RouteCommandBuilder: Sendable {
         self.utun = utun
     }
 
-    public func setDefault() -> [[String]] {
-        [["route", "-n", "add", "-inet", "default", "-interface", utun]]
+    public func setDefault(gateway: String? = nil) -> [[String]] {
+        var commands: [[String]] = []
+        if let gateway {
+            commands.append(["route", "-n", "delete", "-inet", "default", gateway])
+        }
+        commands.append(["route", "-n", "add", "-inet", "default", "-interface", utun])
+        return commands
     }
 
     public func restoreDefault(gateway: String) -> [[String]] {

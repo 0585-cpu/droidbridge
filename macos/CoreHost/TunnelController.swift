@@ -9,7 +9,8 @@ final class TunnelController: NSObject, EngineBridgeDelegate, RelayFlowDelegate,
     private let secret: Data
     private let relayHost: String
     private let relayPort: UInt16
-    private let engineFactory: (EngineBridgeDelegate) -> PacketIngesting?
+    private let maximumFlows: UInt16
+    private let engineFactory: (UInt16, EngineBridgeDelegate) -> PacketIngesting?
 
     private var packetIngester: PacketIngesting?
     private var engineBridge: EngineBridge?
@@ -24,38 +25,45 @@ final class TunnelController: NSObject, EngineBridgeDelegate, RelayFlowDelegate,
         secret: Data,
         relayHost: String = "127.0.0.1",
         relayPort: UInt16 = 27183,
-        engineFactory: @escaping (EngineBridgeDelegate) -> PacketIngesting? = { EngineBridge(delegate: $0) }
+        maximumFlows: UInt16 = 128,
+        engineFactory: @escaping (UInt16, EngineBridgeDelegate) -> PacketIngesting? = {
+            EngineBridge(maximumFlows: $0, delegate: $1)
+        }
     ) {
         self.packetSource = packetSource
         self.secret = secret
         self.relayHost = relayHost
         self.relayPort = relayPort
+        self.maximumFlows = maximumFlows
         self.engineFactory = engineFactory
         let host = relayHost, port = relayPort
         self.dnsClient = RelayDNSClient(secret: secret, transportFactory: { NWConnectionTransport(host: host, port: port) })
         super.init()
     }
 
-    func start() {
+    @discardableResult
+    func start() -> Bool {
         guard lifecycleLock.withLock({
             guard !isRunning else { return false }
             isRunning = true
             return true
-        }) else { return }
+        }) else { return false }
 
-        let engine = engineFactory(self)
+        let engine = engineFactory(maximumFlows, self)
         packetIngester = engine
         engineBridge = engine as? EngineBridge
         guard engine != nil else {
             lifecycleLock.withLock { isRunning = false }
-            return
+            return false
         }
         readPackets()
+        return true
     }
 
     func stop() {
         lifecycleLock.withLock { isRunning = false }
         flowsLock.withLock { flows.values.forEach { conn in Task { await conn.close() } }; flows.removeAll() }
+        engineBridge?.stop()
         packetIngester = nil
         engineBridge = nil
     }
