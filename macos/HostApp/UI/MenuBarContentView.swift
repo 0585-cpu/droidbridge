@@ -14,9 +14,27 @@ struct MenuBarContentView: View {
 
             switch adapter.state {
             case .deviceSelectionRequired(let devices):
-                DevicePickerView(devices: devices) { _ in }
+                DevicePickerView(devices: devices) { device in
+                    Task { await adapter.selectDevice(device) }
+                }
+            case .deviceReady:
+                HStack {
+                    Button("Pair New Mac") { Task { await adapter.pair() } }
+                    if adapter.hasPairing {
+                        Button("Forget Pairing") { Task { await adapter.forgetPairing() } }
+                    }
+                }
+                if adapter.canPrepareRelay {
+                    Button("Prepare Relay") { Task { await adapter.prepareRelay() } }
+                }
             case .pairing(let sas):
-                PairingApprovalView(sas: sas, onApprove: {}, onReject: {})
+                PairingApprovalView(
+                    sas: sas,
+                    onApprove: adapter.approvePairing,
+                    onReject: adapter.rejectPairing
+                )
+            case .relayPreparing:
+                ProgressView("Checking cellular relay…")
             case .relayReady(let health):
                 VStack(alignment: .leading) {
                     Text("Carrier: \(health.carrierName)")
@@ -24,6 +42,10 @@ struct MenuBarContentView: View {
                     Text("Flows: \(health.activeSessions)/\(health.maximumSessions)")
                     Text("↑\(health.uploadedBytes)  ↓\(health.downloadedBytes)")
                 }.font(.caption)
+                HStack {
+                    Button("Recheck Relay") { Task { await adapter.prepareRelay() } }
+                    Button("Forget Pairing") { Task { await adapter.forgetPairing() } }
+                }
             default:
                 EmptyView()
             }
@@ -39,7 +61,7 @@ struct MenuBarContentView: View {
             Divider()
             HStack {
                 Button("Start Tunnel") { Task { await adapter.startTunnel() } }
-                    .disabled(adapter.tunnelRunning)
+                    .disabled(!adapter.canStartTunnel)
                 Button("Stop Tunnel") { Task { await adapter.stopTunnel() } }
                     .disabled(!adapter.tunnelRunning)
             }
@@ -52,7 +74,7 @@ struct MenuBarContentView: View {
         .padding()
         .frame(width: 280)
         .task {
-            await adapter.refresh()
+            adapter.startMonitoring()
             await adapter.refreshTunnelStatus()
         }
     }

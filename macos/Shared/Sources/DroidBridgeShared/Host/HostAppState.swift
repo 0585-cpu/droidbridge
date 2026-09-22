@@ -1,6 +1,6 @@
 import Foundation
 
-/// Immutable snapshot the SwiftUI layer renders. `relayReady` explicitly notes the tunnel is not installed.
+/// Immutable snapshot rendered by the menu-bar app.
 public enum HostAppState: Equatable, Sendable {
     case idle
     case deviceMissing
@@ -21,7 +21,7 @@ public enum HostAppState: Equatable, Sendable {
         case .deviceReady(let device): return "Ready: \(device.model ?? device.serial)"
         case .pairing(let sas): return sas.map { "Confirm code \($0)" } ?? "Pairing…"
         case .relayPreparing: return "Preparing relay…"
-        case .relayReady: return "Relay ready; full tunnel not installed"
+        case .relayReady: return "Relay ready; start the tunnel when ready"
         case .failed(let message): return message
         }
     }

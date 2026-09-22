@@ -27,6 +27,16 @@ func runHostChecks(_ r: CheckRunner) async {
     r.check(removed == [27183, 27184], "device removal clears both forwards")
     r.check(store.deleteCount == 0, "device removal keeps the secret")
 
+    let corePresent = DroidBridgeCoordinatorCore(
+        state: .relayReady(health: readyHealth),
+        adb: RecordingAdb(),
+        secretStore: InMemoryPairingSecretStore(),
+        preparedSerial: "A"
+    )
+    await corePresent.deviceSnapshotChanged([deviceA])
+    r.check(await corePresent.state == .relayReady(health: readyHealth),
+            "present prepared device preserves relay-ready state")
+
     // multiple devices requires selection
     let core2 = DroidBridgeCoordinatorCore(adb: RecordingAdb(), secretStore: InMemoryPairingSecretStore())
     await core2.deviceSnapshotChanged([deviceA, deviceB])
@@ -38,6 +48,16 @@ func runHostChecks(_ r: CheckRunner) async {
     await core3.deviceSnapshotChanged([deviceA])
     let s3 = await core3.state
     r.check(s3 == .deviceReady(deviceA), "single authorized device is ready")
+
+    // User workflow publishes pairing/SAS/relay-preparation states in order.
+    await core3.beginPairing()
+    r.check(await core3.state == .pairing(sas: nil), "pairing starts without a SAS")
+    await core3.showPairingCode("123456")
+    r.check(await core3.state == .pairing(sas: "123456"), "pairing publishes the SAS")
+    await core3.beginRelayPreparation()
+    r.check(await core3.state == .relayPreparing, "relay preparation publishes progress")
+    await core3.deviceSelected(deviceA)
+    r.check(await core3.state == .deviceReady(deviceA), "workflow can return to selected device")
 
     // unauthorized guidance
     let core4 = DroidBridgeCoordinatorCore(adb: RecordingAdb(), secretStore: InMemoryPairingSecretStore())

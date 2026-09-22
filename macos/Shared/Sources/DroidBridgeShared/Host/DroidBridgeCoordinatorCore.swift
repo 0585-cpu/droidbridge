@@ -19,10 +19,15 @@ public actor DroidBridgeCoordinatorCore {
     /// Recompute state from the current device list. If a prepared device disappears, tear down its
     /// forwards (fail closed) but keep the pairing.
     public func deviceSnapshotChanged(_ devices: [AdbDevice]) async {
-        if let prepared = preparedSerial, !devices.contains(where: { $0.serial == prepared }) {
-            await teardownForwards(serial: prepared)
-            preparedSerial = nil
-            state = .deviceMissing
+        if let prepared = preparedSerial {
+            guard devices.contains(where: { $0.serial == prepared && $0.state == .authorized }) else {
+                await teardownForwards(serial: prepared)
+                preparedSerial = nil
+                state = .deviceMissing
+                return
+            }
+            // Health/metrics are more informative than a generic device-ready state while the
+            // prepared USB endpoint is still present.
             return
         }
 
@@ -46,6 +51,20 @@ public actor DroidBridgeCoordinatorCore {
         guard let device = devices.first(where: { $0.serial == serial && $0.state == .authorized }) else { return }
         state = .deviceReady(device)
     }
+
+    public func deviceSelected(_ device: AdbDevice) {
+        guard device.state == .authorized else { return }
+        state = .deviceReady(device)
+    }
+
+    public func beginPairing() { state = .pairing(sas: nil) }
+
+    public func showPairingCode(_ sas: String) {
+        guard case .pairing = state else { return }
+        state = .pairing(sas: sas)
+    }
+
+    public func beginRelayPreparation() { state = .relayPreparing }
 
     /// Marks relay prepared (forwards exist) and publishes health.
     public func relayPrepared(serial: String, health: RelayHealth) {
