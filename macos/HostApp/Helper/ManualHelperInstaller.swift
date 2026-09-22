@@ -1,4 +1,5 @@
 import DroidBridgeShared
+import CryptoKit
 import Foundation
 import Security
 
@@ -57,13 +58,13 @@ struct ManualHelperInstaller: Sendable {
         }
 
         try validateHelper(at: helperURL)
-        try validatePlist(at: plistURL)
+        let plistDigest = try validatePlist(at: plistURL)
 
         let result = try await runner.run(
             executable: URL(fileURLWithPath: "/usr/bin/osascript"),
             arguments: [
                 "-e", Self.appleScript,
-                "--", helperURL.path, plistURL.path, helperRequirement,
+                "--", helperURL.path, plistURL.path, helperRequirement, plistDigest,
             ],
             environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
         )
@@ -93,23 +94,28 @@ struct ManualHelperInstaller: Sendable {
         }
     }
 
-    private func validatePlist(at url: URL) throws {
+    private func validatePlist(at url: URL) throws -> String {
         let data = try Data(contentsOf: url)
         guard let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
               plist["Label"] as? String == HelperCodeRequirement.machServiceName,
               let arguments = plist["ProgramArguments"] as? [String],
-              arguments.first == "/Library/PrivilegedHelperTools/io.droidbridge.helper"
+              arguments == ["/Library/PrivilegedHelperTools/io.droidbridge.helper"],
+              let machServices = plist["MachServices"] as? [String: Any],
+              machServices[HelperCodeRequirement.machServiceName] as? Bool == true,
+              plist["RunAtLoad"] as? Bool == true
         else {
             throw ManualHelperInstallerError.invalidLaunchDaemonPlist
         }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     private static let appleScript = #"""
 on run argv
-    if (count of argv) is not 3 then error "invalid installer arguments"
+    if (count of argv) is not 4 then error "invalid installer arguments"
     set helperSource to item 1 of argv
     set plistSource to item 2 of argv
     set helperRequirement to item 3 of argv
+    set expectedPlistDigest to item 4 of argv
     set helperDestination to "/Library/PrivilegedHelperTools/io.droidbridge.helper"
     set plistDestination to "/Library/LaunchDaemons/io.droidbridge.helper.plist"
     set helperStage to helperDestination & ".new"
@@ -121,6 +127,10 @@ on run argv
     set commandText to commandText & " && /usr/bin/codesign --verify --strict " & quoted form of requirementArgument & " " & quoted form of helperStage
     set commandText to commandText & " && /usr/bin/install -o root -g wheel -m 0644 " & quoted form of plistSource & " " & quoted form of plistStage
     set commandText to commandText & " && /usr/bin/plutil -lint " & quoted form of plistStage & " >/dev/null"
+    set commandText to commandText & " && test \"$(/usr/bin/shasum -a 256 " & quoted form of plistStage & " | /usr/bin/awk '{print $1}')\" = " & quoted form of expectedPlistDigest
+    set commandText to commandText & " && test \"$(/usr/bin/plutil -extract Label raw -o - " & quoted form of plistStage & ")\" = io.droidbridge.helper"
+    set commandText to commandText & " && test \"$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - " & quoted form of plistStage & ")\" = /Library/PrivilegedHelperTools/io.droidbridge.helper"
+    set commandText to commandText & " && test \"$(/usr/bin/plutil -extract MachServices.io.droidbridge.helper raw -o - " & quoted form of plistStage & ")\" = true"
     set commandText to commandText & " && /bin/mv -f " & quoted form of helperStage & " " & quoted form of helperDestination
     set commandText to commandText & " && /bin/mv -f " & quoted form of plistStage & " " & quoted form of plistDestination
     set commandText to commandText & " && (/bin/launchctl bootout system/io.droidbridge.helper >/dev/null 2>&1 || true)"

@@ -11,4 +11,3 @@ func runXpcContractChecks(_ r: CheckRunner) {
     r.check(HelperCodeRequirement.machServiceName == "io.droidbridge.helper", "uses helper Mach service")
     r.finish("xpc contract")
 }
-

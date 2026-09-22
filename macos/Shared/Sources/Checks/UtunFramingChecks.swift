@@ -16,4 +16,3 @@ func runUtunFramingChecks(_ r: CheckRunner) {
     r.check(UtunFraming.decode(Data([0, 0, 2])) == nil, "rejects short frame")
     r.finish("utun framing")
 }
-

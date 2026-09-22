@@ -9,7 +9,6 @@ struct HelperCommandResult {
         String(decoding: standardOutput + standardError, as: UTF8.self)
     }
 }
-
 typealias HelperCommandExecuting = (_ executable: URL, _ arguments: [String], _ input: Data?) throws -> HelperCommandResult
 
 enum HelperCommandRunner {
@@ -63,4 +62,3 @@ enum HelperCommandError: LocalizedError {
         }
     }
 }
-
