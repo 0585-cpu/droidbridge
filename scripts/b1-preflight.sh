@@ -79,6 +79,10 @@ make verify-foundation >/dev/null 2>&1; record foundation_tests "$(yn $?)"
 make check-macos >/dev/null 2>&1; record swift_checks "$(yn $?)"
 make test-core >/dev/null 2>&1; record core_tests "$(yn $?)"
 
+# 13. privileged helper installed and registered with system launchd
+launchctl print system/io.droidbridge.helper >/dev/null 2>&1
+record helper_installed "$(yn $?)"
+
 # --- emit evidence + human summary ---
 python3 - "$fail" "${checks[@]}" <<'PY'
 import sys

@@ -20,5 +20,10 @@
 	<string>1</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>SMPrivilegedExecutables</key>
+	<dict>
+		<key>io.droidbridge.helper</key>
+		<string>identifier "io.droidbridge.helper" and anchor apple generic and certificate leaf[subject.OU] = "$(DEVELOPMENT_TEAM)"</string>
+	</dict>
 </dict>
 </plist>

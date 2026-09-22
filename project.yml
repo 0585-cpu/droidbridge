@@ -24,6 +24,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.droidbridge.helper
         CODE_SIGN_ENTITLEMENTS: macos/Helper/Helper.entitlements
+        CREATE_INFOPLIST_SECTION_IN_BINARY: YES
         INFOPLIST_FILE: macos/Helper/Info.plist
         MARKETING_VERSION: "0.1.0"
         SWIFT_VERSION: "6.0"
@@ -65,7 +66,6 @@ targets:
             subpath: Contents/Library/LaunchDaemons
     dependencies:
       - package: DroidBridgeShared
-      - target: DroidBridgePacketTunnel
       - target: DroidBridgeHelper
         embed: true
         copy:
@@ -75,9 +75,12 @@ targets:
       path: macos/HostApp/Resources/Info.plist
       properties:
         LSUIElement: true
+        SMPrivilegedExecutables:
+          io.droidbridge.helper: 'identifier "io.droidbridge.helper" and anchor apple generic and certificate leaf[subject.OU] = "$(DEVELOPMENT_TEAM)"'
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.droidbridge.macos
+        PRODUCT_NAME: DroidBridge
         CODE_SIGN_ENTITLEMENTS: macos/HostApp/Resources/HostApp.entitlements
         SWIFT_VERSION: "6.0"
         MARKETING_VERSION: "0.1.0"
