@@ -11,7 +11,7 @@ final class NEPacketFlowSource: PacketSource {
         self.flow = flow
     }
 
-    func read(_ handler: @escaping ([Data]) -> Void) {
+    func read(_ handler: @escaping @Sendable ([Data]) -> Void) {
         flow.readPackets { packets, protocols in
             let ipv4 = zip(packets, protocols).compactMap { packet, addressFamily in
                 addressFamily.int32Value == AF_INET ? packet : nil
