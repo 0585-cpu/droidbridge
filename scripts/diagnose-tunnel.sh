@@ -14,6 +14,15 @@ exec > >(tee "$out") 2>&1
 
 say() { echo; echo "===== $* ====="; }
 
+# A snapshot of a stopped tunnel cannot answer anything, so refuse early and
+# say exactly what is missing rather than producing a misleading report.
+route_if="$(route -n get default 2>/dev/null | awk '$1=="interface:"{print $2}')"
+if [[ "${route_if:-}" != utun* ]]; then
+  echo "the tunnel is NOT running: the default route is on '${route_if:-none}', not a utun." >&2
+  echo "Start it in the menu-bar app (Prepare Relay -> Start Tunnel), then re-run this." >&2
+  exit 2
+fi
+
 say "when"
 date
 echo "uid=$(id -u)  (run under sudo for pf rule inspection)"
