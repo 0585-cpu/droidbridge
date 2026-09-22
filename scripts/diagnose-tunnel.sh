@@ -63,11 +63,16 @@ time dig +time=4 +tries=1 example.com @198.18.0.1 2>&1 | grep -E "ANSWER|status:
 say "EXPERIMENT 2: TCP to a fixed IPv4 (no DNS involved)"
 # Sample relay connections WHILE the TCP attempt runs: if the engine opens a
 # flow, a non-LISTEN socket to 127.0.0.1:27183 appears here.
-( curl -s --max-time 10 -o /dev/null -w "curl: HTTP %{http_code} connect=%{time_connect}s total=%{time_total}s\n" https://1.1.1.1/ 2>&1 & )
-for i in 1 2 3 4 5; do
-  sleep 1
+# The target must be reachable FROM THE PHONE, and the window must outlast the
+# relay's 10s connect timeout — otherwise a carrier-blocked address (1.1.1.1 is
+# blocked on this carrier) or a too short deadline looks like a broken data plane.
+tcp_target="${DROIDBRIDGE_TCP_TARGET:-8.8.8.8}"
+echo "target: $tcp_target (override with DROIDBRIDGE_TCP_TARGET)"
+( curl -s --max-time 20 -o /dev/null -w "curl: HTTP %{http_code} connect=%{time_connect}s total=%{time_total}s\n" "https://$tcp_target/" 2>&1 & )
+for i in $(seq 1 11); do
+  sleep 2
   n=$(netstat -an -p tcp 2>/dev/null | grep 27183 | grep -vc LISTEN)
-  echo "t+${i}s relay flows=$n"
+  echo "t+$((i * 2))s relay flows=$n"
   netstat -an -p tcp 2>/dev/null | grep 27183 | grep -v LISTEN | head -3
 done
 wait 2>/dev/null
