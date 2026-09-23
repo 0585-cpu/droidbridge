@@ -5,6 +5,7 @@ private struct ExpectedCommand {
     let executable: String
     let arguments: [String]
     let result: HelperCommandResult
+    var input: String? = nil
 }
 
 private final class ScriptedRunner {
@@ -20,6 +21,10 @@ private final class ScriptedRunner {
         let expected = commands.removeFirst()
         precondition(executable.path == expected.executable, "unexpected executable: \(executable.path)")
         precondition(arguments == expected.arguments, "unexpected arguments: \(arguments)")
+        if let wanted = expected.input {
+            let got = String(decoding: input ?? Data(), as: UTF8.self)
+            precondition(got == wanted, "unexpected stdin for \(executable.path):\n\(got)")
+        }
         calls.append((executable.path, arguments))
         return expected.result
     }
@@ -56,57 +61,11 @@ private func result(_ status: Int32 = 0, _ output: String = "") -> HelperCommand
     )
 }
 
-private func command(_ arguments: [String], _ result: HelperCommandResult) -> ExpectedCommand {
-    ExpectedCommand(executable: "/sbin/route", arguments: arguments, result: result)
-}
-
 private func check(_ condition: @autoclosure () -> Bool, _ message: String) {
     guard condition() else {
         FileHandle.standardError.write(Data("FAIL: \(message)\n".utf8))
         exit(EXIT_FAILURE)
     }
-}
-
-private func testRouteRestoreRetryDoesNotRedeleteUtun() throws {
-    let gateway = "192.0.2.1"
-    let runner = ScriptedRunner([
-        command(["-n", "get", "default"], result(0, "gateway: \(gateway)\ninterface: en0\n")),
-        command(["-n", "delete", "-inet", "default", gateway], result()),
-        command(["-n", "add", "-inet", "default", "-interface", "utun7"], result()),
-        command(["-n", "delete", "-inet", "default", "-interface", "utun7"], result()),
-        command(["-n", "add", "-inet", "default", gateway], result(1, "temporary failure")),
-        command(["-n", "get", "default"], result(1, "not in table")),
-        command(["-n", "add", "-inet", "default", gateway], result()),
-        command(["-n", "get", "default"], result(0, "gateway: \(gateway)\ninterface: en0\n")),
-    ])
-    let controller = RouteController(run: runner.run)
-    try controller.setDefault(utun: "utun7")
-    do {
-        try controller.restore()
-        check(false, "the first restore should fail")
-    } catch {}
-    try controller.restore()
-    check(!controller.isConfigured, "the second restore should clear recovery state")
-    check(runner.isEmpty, "every scripted route command should be consumed")
-    let utunDeletes = runner.calls.filter {
-        $0.1 == ["-n", "delete", "-inet", "default", "-interface", "utun7"]
-    }
-    check(utunDeletes.count == 1, "a retry must not delete the utun route twice")
-}
-
-private func testPersistedRouteRecoveryIsIdempotent() throws {
-    let gateway = "198.51.100.1"
-    let runner = ScriptedRunner([
-        command(["-n", "delete", "-inet", "default", "-interface", "utun4"], result(1, "not in table")),
-        command(["-n", "get", "default"], result(0, "gateway: \(gateway)\ninterface: en0\n")),
-        command(["-n", "add", "-inet", "default", gateway], result(1, "file exists")),
-        command(["-n", "get", "default"], result(0, "gateway: \(gateway)\ninterface: en0\n")),
-    ])
-    let controller = RouteController(run: runner.run)
-    try controller.adoptRecoveryState(gateway: gateway, utun: "utun4")
-    try controller.restore()
-    check(!controller.isConfigured, "already-restored routes should be accepted")
-    check(runner.isEmpty, "every persisted recovery command should be consumed")
 }
 
 private func testRecoveryStateStoreRoundTrip() throws {
@@ -117,11 +76,7 @@ private func testRecoveryStateStoreRoundTrip() throws {
 
     let url = directory.appendingPathComponent("recovery.json")
     let store = HelperRecoveryStateStore(url: url)
-    let expected = HelperRecoveryState(
-        gateway: "203.0.113.1",
-        utun: "utun9",
-        pfEnableToken: "12345"
-    )
+    let expected = HelperRecoveryState(utun: "utun9", pfEnableToken: "12345")
     try store.save(expected)
     let loaded = try store.load()
     check(loaded == expected, "recovery state should round-trip")
@@ -174,7 +129,7 @@ private func testPendingPfJournalCanBeRecovered() throws {
     defer { try? FileManager.default.removeItem(at: directory) }
 
     let store = HelperRecoveryStateStore(url: directory.appendingPathComponent("recovery.json"))
-    let pending = HelperRecoveryState(gateway: "192.0.2.1", utun: "utun3", pfEnableToken: nil)
+    let pending = HelperRecoveryState(utun: "utun3", pfEnableToken: nil)
     try store.save(pending)
     let loaded = try store.load()
     check(loaded == pending, "a pre-token PF journal should round-trip")
@@ -289,123 +244,87 @@ private func testTunnelStartupPreflightsBeforeRouteMutation() async {
     }
 }
 
-private func networksetup(_ arguments: [String], _ result: HelperCommandResult) -> ExpectedCommand {
-    ExpectedCommand(executable: "/usr/sbin/networksetup", arguments: arguments, result: result)
+
+private func scutil(_ input: String, _ output: String = "") -> ExpectedCommand {
+    ExpectedCommand(executable: "/usr/sbin/scutil", arguments: [], result: result(0, output), input: input)
 }
 
-private func resolverFlush() -> [ExpectedCommand] {
-    [
-        ExpectedCommand(executable: "/usr/bin/dscacheutil", arguments: ["-flushcache"], result: result()),
-        ExpectedCommand(executable: "/usr/bin/killall", arguments: ["-HUP", "mDNSResponder"], result: result()),
-    ]
-}
+private let primaryIsEn0 = "<dictionary> {\n  PrimaryInterface : en0\n}\n"
+private let primaryIsUtun9 = "<dictionary> {\n  PrimaryInterface : utun9\n}\n"
 
-private let dnsServiceOrder = """
-An asterisk (*) denotes that a network service is disabled.
-(1) USB 10/100/1000 LAN
-(Hardware Port: USB 10/100/1000 LAN, Device: en7)
-
-(2) Wi-Fi
-(Hardware Port: Wi-Fi, Device: en0)
-
-(3) Tailscale
-(Hardware Port: io.tailscale.ipn.macos, Device: )
-"""
-
-/// The tunnel must send the system resolver into 198.18.0.1 and, on stop, put
-/// back exactly what the user had — including a manual list, which a naive
-/// "reset to DHCP" would erase.
-private func testDnsApplyAndRestorePreserveManualServers() throws {
+/// Publishing is only done once configd has actually made the tunnel primary:
+/// that, not scutil's exit status, is what keeps the default route on utun.
+private func testNetworkServicePublishWaitsForConfigd() throws {
+    let publish = TunnelNetworkService.publishScript(utun: "utun9")!
     let runner = ScriptedRunner([
-        networksetup(["-listnetworkserviceorder"], result(0, dnsServiceOrder)),
-        networksetup(["-getdnsservers", "USB 10/100/1000 LAN"], result(0, "8.8.8.8\n")),
-        networksetup(["-getdnsservers", "Wi-Fi"], result(0, "There aren't any DNS Servers set on Wi-Fi.\n")),
-        networksetup(["-setdnsservers", "USB 10/100/1000 LAN", "198.18.0.1"], result()),
-        networksetup(["-setdnsservers", "Wi-Fi", "198.18.0.1"], result()),
-    ] + resolverFlush() + [
-        networksetup(["-setdnsservers", "USB 10/100/1000 LAN", "8.8.8.8"], result()),
-        networksetup(["-setdnsservers", "Wi-Fi", "Empty"], result()),
-    ] + resolverFlush())
-    let controller = DnsController(run: runner.run)
-    let originals = try controller.capture()
-    check(originals == ["USB 10/100/1000 LAN": ["8.8.8.8"], "Wi-Fi": []],
-          "capture should record manual and DHCP-provided DNS per service")
-    try controller.apply(originals)
-    check(controller.isConfigured, "applied DNS must be tracked for restore")
-    try controller.restore()
-    check(!controller.isConfigured, "a successful restore clears the tracked state")
-    check(runner.isEmpty, "every scripted DNS command should be consumed")
-}
-
-/// An unreadable service must stop the start before anything is changed:
-/// guessing "DHCP" would later restore Empty over a manual setting.
-private func testDnsCaptureRefusesUnreadableService() throws {
-    let runner = ScriptedRunner([
-        networksetup(["-listnetworkserviceorder"], result(0, dnsServiceOrder)),
-        networksetup(["-getdnsservers", "USB 10/100/1000 LAN"], result(0, "** Error: The parameters were not valid.\n")),
+        scutil(publish),
+        scutil(TunnelNetworkService.primaryQuery, primaryIsEn0),
+        scutil(TunnelNetworkService.primaryQuery, primaryIsUtun9),
+        scutil(TunnelNetworkService.removeScript),
     ])
-    let controller = DnsController(run: runner.run)
-    do {
-        _ = try controller.capture()
-        check(false, "capture should reject an unrecognized -getdnsservers answer")
-    } catch {}
-    check(!controller.isConfigured, "a failed capture must not claim configured DNS")
-    check(runner.isEmpty, "no DNS setting may be changed after a failed capture")
+    let service = NetworkServicePublisher(run: runner.run, attempts: 5, pollInterval: 0)
+    try service.publish(utun: "utun9")
+    check(service.isPublished, "a confirmed publish is tracked")
+    try service.withdraw()
+    check(!service.isPublished, "withdraw clears the published state")
+    check(runner.isEmpty, "every scutil step should be consumed")
 }
 
-/// A failed restore keeps the originals so Stop can be retried, like PF and routes.
-private func testDnsRestoreFailureRetainsStateForRetry() throws {
+/// scutil exits 0 even when configd refuses a write, so a rejection must be
+/// read from its output; and a service configd never promotes must fail the
+/// start while staying marked published, so the rollback withdraws it.
+private func testNetworkServiceFailuresAreDetected() throws {
+    let publish = TunnelNetworkService.publishScript(utun: "utun9")!
+    let refused = ScriptedRunner([scutil(publish, "  Permission denied\n")])
+    let refusedService = NetworkServicePublisher(run: refused.run, attempts: 3, pollInterval: 0)
+    do {
+        try refusedService.publish(utun: "utun9")
+        check(false, "a refused scutil write must fail the publish")
+    } catch {}
+    check(refusedService.isPublished, "a failed publish stays marked so rollback withdraws it")
+
+    let ignored = ScriptedRunner([
+        scutil(publish),
+        scutil(TunnelNetworkService.primaryQuery, primaryIsEn0),
+        scutil(TunnelNetworkService.primaryQuery, primaryIsEn0),
+        scutil(TunnelNetworkService.primaryQuery, primaryIsEn0),
+    ])
+    let ignoredService = NetworkServicePublisher(run: ignored.run, attempts: 3, pollInterval: 0)
+    do {
+        try ignoredService.publish(utun: "utun9")
+        check(false, "a service configd never makes primary must fail the publish")
+    } catch {}
+    check(ignored.isEmpty, "the primary interface should be polled a bounded number of times")
+
+    let unsafe = NetworkServicePublisher(run: { _, _, _ in
+        check(false, "an unsafe interface name must be rejected before scutil runs")
+        return result()
+    })
+    do {
+        try unsafe.publish(utun: "utun9\nremove State:/Network/Global/IPv4")
+        check(false, "an unsafe interface name must be rejected")
+    } catch {}
+    check(!unsafe.isPublished, "a rejected name publishes nothing")
+}
+
+/// Withdraw is also the crash-recovery path, run by a fresh helper that never
+/// published anything itself, so absent keys must be accepted.
+private func testNetworkServiceWithdrawIsIdempotent() throws {
     let runner = ScriptedRunner([
-        networksetup(["-setdnsservers", "Wi-Fi", "Empty"], result(4, "** Error\n")),
-    ] + resolverFlush() + [
-        networksetup(["-setdnsservers", "Wi-Fi", "Empty"], result()),
-    ] + resolverFlush())
-    let controller = DnsController(run: runner.run)
-    try controller.adoptRecoveryState(["Wi-Fi": []])
+        scutil(TunnelNetworkService.removeScript, "  No such key\n  No such key\n"),
+        scutil(TunnelNetworkService.removeScript, "  Permission denied\n"),
+    ])
+    let service = NetworkServicePublisher(run: runner.run)
+    try service.withdraw()
+    check(!service.isPublished, "withdrawing absent keys succeeds")
     do {
-        try controller.restore()
-        check(false, "the first DNS restore should fail")
+        try service.withdraw()
+        check(false, "a refused removal must be reported")
     } catch {}
-    check(controller.isConfigured, "a failed DNS restore must retain its originals")
-    try controller.restore()
-    check(!controller.isConfigured, "a successful retry clears the originals")
-    check(runner.isEmpty, "every DNS retry command should be consumed")
-}
-
-private func testDnsRecoveryRejectsInvalidJournal() {
-    let controller = DnsController(run: { _, _, _ in result() })
-    do {
-        try controller.adoptRecoveryState(["Wi-Fi": ["8.8.8.8; rm -rf /"]])
-        check(false, "a tampered DNS journal entry must be rejected")
-    } catch {}
-    check(!controller.isConfigured, "a rejected journal must not be adopted")
-}
-
-private func testRecoveryStateCarriesDnsAndReadsOldJournals() throws {
-    let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("droidbridge-helper-checks-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let url = directory.appendingPathComponent("recovery.json")
-    let store = HelperRecoveryStateStore(url: url)
-    let expected = HelperRecoveryState(
-        gateway: "203.0.113.1", utun: "utun9", pfEnableToken: "7",
-        dnsServers: ["Wi-Fi": [], "USB 10/100/1000 LAN": ["8.8.8.8"]]
-    )
-    try store.save(expected)
-    let loaded = try store.load()
-    check(loaded == expected, "a journal with DNS originals should round-trip")
-
-    // A journal written by a helper that predates DNS handling must still load,
-    // or an upgrade would strand a retained fail-closed state.
-    try Data(#"{"gateway":"203.0.113.1","utun":"utun9","pfEnableToken":"7"}"#.utf8).write(to: url)
-    let legacy = try store.load()
-    check(legacy != nil && legacy?.dnsServers == nil, "a pre-DNS journal should load with no DNS originals")
+    check(runner.isEmpty, "both withdraw attempts should run scutil")
 }
 
 do {
-    try testRouteRestoreRetryDoesNotRedeleteUtun()
-    try testPersistedRouteRecoveryIsIdempotent()
     try testRecoveryStateStoreRoundTrip()
     try testPfReleaseFailureRetainsTokenForRetry()
     try testPendingPfJournalCanBeRecovered()
@@ -413,12 +332,10 @@ do {
     try testInstallerDetectsStaleInstalledHelper()
     testEnginePollTimerRunsAndStops()
     await testTunnelStartupPreflightsBeforeRouteMutation()
-    try testDnsApplyAndRestorePreserveManualServers()
-    try testDnsCaptureRefusesUnreadableService()
-    try testDnsRestoreFailureRetainsStateForRetry()
-    testDnsRecoveryRejectsInvalidJournal()
-    try testRecoveryStateCarriesDnsAndReadsOldJournals()
-    print("helper checks: 14 passed, 0 failed")
+    try testNetworkServicePublishWaitsForConfigd()
+    try testNetworkServiceFailuresAreDetected()
+    try testNetworkServiceWithdrawIsIdempotent()
+    print("helper checks: 10 passed, 0 failed")
 } catch {
     FileHandle.standardError.write(Data("FAIL: \(error.localizedDescription)\n".utf8))
     exit(EXIT_FAILURE)

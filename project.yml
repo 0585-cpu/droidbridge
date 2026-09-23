@@ -61,10 +61,9 @@ targets:
     sources:
       - path: macos/HelperChecks
       - path: macos/Helper/HelperCommandRunner.swift
-      - path: macos/Helper/RouteController.swift
       - path: macos/Helper/PfController.swift
       - path: macos/Helper/HelperRecoveryStateStore.swift
-      - path: macos/Helper/DnsController.swift
+      - path: macos/Helper/NetworkServicePublisher.swift
       - path: macos/HostApp/Helper/ManualHelperInstaller.swift
       - path: macos/CoreHost/EnginePollTimer.swift
       - path: macos/HostApp/Tunnel/TunnelStartupSequence.swift

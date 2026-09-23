@@ -26,23 +26,6 @@ func runPfRouteChecks(_ r: CheckRunner) {
     let otherTunnel = PfRuleBuilder(utun: "utun4", physical: ["en0"]).anchorBody()
     r.check(!otherTunnel.contains("pass quick on utun0"), "foreign utun is not exempted")
 
-    let commands = RouteCommandBuilder(utun: "utun4")
-    r.check(
-        commands.setDefault(gateway: "192.168.0.1") == [
-            ["route", "-n", "delete", "-inet", "default", "192.168.0.1"],
-            ["route", "-n", "add", "-inet", "default", "-interface", "utun4"],
-        ],
-        "original default is removed before the utun default is added"
-    )
-    r.check(
-        commands.setDefault().contains(["route", "-n", "add", "-inet", "default", "-interface", "utun4"]),
-        "default route targets utun"
-    )
-    r.check(
-        commands.restoreDefault(gateway: "192.168.0.1").contains(["route", "-n", "add", "-inet", "default", "192.168.0.1"]),
-        "original gateway is restored"
-    )
-
     let hardwarePorts = """
     Hardware Port: Wi-Fi
     Device: en0
