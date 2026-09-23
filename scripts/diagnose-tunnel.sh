@@ -34,6 +34,26 @@ echo "default route interface: ${utun:-none}"
 route -n get default 2>/dev/null | sed -n '1,12p'
 if [[ "${utun:-}" == utun* ]]; then ifconfig "$utun" 2>/dev/null; fi
 
+say "DNS: is the system resolver inside the tunnel?"
+# Browsers use the system resolver; earlier probes used IP literals or an
+# explicit @198.18.0.1 and so never exercised this path.
+echo "resolver #1 nameserver: $(scutil --dns | awk '/^resolver #1/{f=1} f&&/nameserver\[0\]/{print $3; exit}')"
+networksetup -listnetworkserviceorder 2>/dev/null | awk '/^\([0-9]+\) /{sub(/^\([0-9]+\) /,""); print}' |
+  while IFS= read -r svc; do
+    printf '  %-24s -> %s\n' "$svc" "$(networksetup -getdnsservers "$svc" 2>&1 | tr '\n' ' ')"
+  done
+echo "--- recovery journal (no secrets: gateway, utun, pf token, DNS originals) ---"
+cat /Library/PrivilegedHelperTools/io.droidbridge.recovery.json 2>&1; echo
+echo "--- hostnames through the SYSTEM resolver ---"
+for url in https://example.com/ https://www.apple.com/ https://api.anthropic.com/ https://claude.ai/; do
+  r=$(curl -s -m 12 -o /dev/null -w "http=%{http_code} dns=%{time_namelookup}s connect=%{time_connect}s total=%{time_total}s" "$url"); rc=$?
+  echo "  $url -> $r rc=$rc   (6 = no DNS, 28 = timeout)"
+done
+echo "--- same names straight at the tunnel resolver (isolates DNS from TCP) ---"
+for name in example.com api.anthropic.com claude.ai; do
+  echo "  $name -> $(dig +short +time=4 +tries=1 "$name" @198.18.0.1 A 2>&1 | tr '\n' ' ')"
+done
+
 say "pf: is our anchor loaded?"
 if sudo -n true 2>/dev/null || [[ "$(id -u)" == "0" ]]; then
   echo "--- anchor rules ---"
