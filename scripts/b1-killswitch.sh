@@ -51,7 +51,9 @@ for scenario in "${scenarios[@]}"; do
   capture="build/evidence/killswitch-${scenario}-wifi.txt"
   attempts="$(mktemp -t droidbridge-killswitch-attempts.XXXXXX)"
   : >"$capture"; : >"$attempts"
-  sudo tcpdump -ni "$wifi" -s 96 -tt -l "host $target and tcp" >"$capture" 2>/dev/null &
+  # -n: a backgrounded sudo cannot show a password prompt, so fail fast instead
+  # of hanging; the listening-banner check below then reports it.
+  sudo -n tcpdump -ni "$wifi" -s 96 -tt -l "host $target and tcp" >"$capture" 2>"$capture.err" &
   capture_pid=$!
   (
     while true; do
@@ -96,8 +98,13 @@ print(leaked, len(post), successes, blocked_ms)
 PY
   )
   route_after="$(/sbin/route -n get "$target" | awk '$1=="interface:" && !found {print $2;found=1}')"
+  # An empty capture only proves "no leak" if tcpdump was actually listening;
+  # otherwise a capture that never started would read as a clean pass.
+  capture_active=false
+  grep -q "^listening on " "$capture.err" 2>/dev/null && capture_active=true
+  [[ "$capture_active" == true ]] || echo "tcpdump never started on $wifi during $scenario" >&2
   fault_passed=false
-  if [[ "$leaked" == "0" && "$post_attempts" -gt 0 && "$successful_after" == "0" \
+  if [[ "$capture_active" == true && "$leaked" == "0" && "$post_attempts" -gt 0 && "$successful_after" == "0" \
         && "$first_failure_ms" -ge 0 && "$first_failure_ms" -le 3000 && "$route_after" == utun* ]]; then
     fault_passed=true
   fi
