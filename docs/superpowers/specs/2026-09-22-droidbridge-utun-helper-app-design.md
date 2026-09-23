@@ -128,7 +128,7 @@ A pf anchor `com.apple/io.droidbridge` holds the ruleset (conceptually). The
 the `com.apple/*` wildcard anchor:
 - `pass on lo0` — relay path is loopback `127.0.0.1:27183` (adb forward).
 - `pass on utunN` — the healthy tunnel path.
-- `block drop out on { en0, en1, … physical interfaces }` — every other egress denied.
+- `block return out all` (default deny; `set block-policy return`) — every other egress denied, with an immediate RST/ICMP to the local sender so pre-tunnel connections fail fast instead of hanging.
 
 Because the Mac→Android relay travels over **loopback + the USB kernel path** (not physical
 IP egress), "block all out on physical interfaces" is a complete kill-switch, and it also

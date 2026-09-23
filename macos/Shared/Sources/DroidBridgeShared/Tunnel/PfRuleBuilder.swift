@@ -17,14 +17,20 @@ public struct PfRuleBuilder: Sendable {
     /// exceptions for loopback (the relay) and our own utun still short-circuit;
     /// everything else falls through to the deny. The explicit per-interface
     /// blocks are kept for operator legibility in `pfctl -a … -s rules`.
+    ///
+    /// Blocked packets are *returned* (TCP RST / ICMP unreachable to the local
+    /// sender), not dropped: a connection opened on the physical interface
+    /// before the tunnel started would otherwise hang until a TCP timeout
+    /// instead of failing at once and reconnecting through utun. The reply is
+    /// delivered locally, so nothing leaves the physical interface either way.
     public func anchorBody() -> String {
         var lines = [
-            "set block-policy drop",
-            "block drop out all",
+            "set block-policy return",
+            "block return out all",
             "pass quick on lo0",
             "pass quick on \(utun)",
         ]
-        lines.append(contentsOf: physical.map { "block drop out quick on \($0) all" })
+        lines.append(contentsOf: physical.map { "block return out quick on \($0) all" })
         return lines.joined(separator: "\n") + "\n"
     }
 }
