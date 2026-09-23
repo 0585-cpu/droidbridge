@@ -34,6 +34,20 @@ check_ent() { # bundle  needle  label
     && echo "[PASS] $3" || { echo "[FAIL] $3" >&2; return 1; }
 }
 rc=0
+usb_library="$app/Contents/Frameworks/libusb-1.0.0.dylib"
+if [ -f "$usb_library" ] && codesign --verify --strict "$usb_library"; then
+  echo "[PASS] bundled libusb signature verifies"
+else
+  echo "[FAIL] bundled libusb missing or unsigned" >&2
+  rc=1
+fi
+if [ -f "$app/Contents/Resources/ThirdParty/libusb-COPYING.txt" ] && \
+   [ -f "$app/Contents/Resources/ThirdParty/libusb-source.tar.bz2" ]; then
+  echo "[PASS] libusb license and corresponding source included"
+else
+  echo "[FAIL] libusb license/source missing" >&2
+  rc=1
+fi
 codesign --verify --deep --strict "$app" >/dev/null 2>&1 \
   && echo "[PASS] app signature verifies" || { echo "[FAIL] app signature" >&2; rc=1; }
 check_ent "$app" "group.io.droidbridge.shared" "host app-group" || rc=1

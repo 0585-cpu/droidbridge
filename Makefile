@@ -33,9 +33,12 @@ test-android:
 smoke-android:
 	./scripts/smoke-android-relay.sh
 
-.PHONY: check-macos check-macos-helper smoke-macos-control
+.PHONY: check-macos check-macos-usb check-macos-helper smoke-macos-control
 check-macos:
 	swift run --package-path macos/Shared Checks
+
+check-macos-usb:
+	swift run --package-path macos/USB USBChecks
 
 check-macos-helper:
 	./scripts/check-macos-helper.sh

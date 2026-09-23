@@ -4,12 +4,32 @@ public struct RelayPreparation: Sendable {
     public let health: RelayHealth
 }
 
-/// Minimal ADB surface the preparer needs (lets tests stub it without a real device).
-public protocol RelayAdb: Sendable {
-    func packagePath(serial: String, package: String) async throws -> String?
+/// A transport exposes only the two local services used by DBP and pairing.
+public protocol RelayForwarding: Sendable {
     func forward(serial: String, hostPort: UInt16, devicePort: UInt16) async throws
     func removeForward(serial: String, hostPort: UInt16) async throws
+}
+
+public protocol RelayDeviceTransport: RelayForwarding {
+    func prepareDevice(serial: String) async throws
+    func activateApp(serial: String) async throws
+}
+
+/// Legacy development transport; the shipping host uses AOA.
+public protocol RelayAdb: RelayDeviceTransport {
+    func packagePath(serial: String, package: String) async throws -> String?
     func startActivity(serial: String, component: String) async throws
+}
+
+public extension RelayAdb {
+    func prepareDevice(serial: String) async throws {
+        guard try await packagePath(serial: serial, package: RelayPreparer.androidPackage) != nil else {
+            throw DroidBridgeError.relayAppNotRunning
+        }
+    }
+    func activateApp(serial: String) async throws {
+        try await startActivity(serial: serial, component: RelayPreparer.activity)
+    }
 }
 
 extension AdbClient: RelayAdb {
@@ -38,19 +58,17 @@ public struct RelayPreparer: Sendable {
     public static let androidPackage = "io.droidbridge.android"
     public static let activity = "io.droidbridge.android/io.droidbridge.MainActivity"
 
-    private let adb: any RelayAdb
+    private let adb: any RelayDeviceTransport
     private let healthClient: any RelayHealthChecking
 
-    public init(adb: any RelayAdb, healthClient: any RelayHealthChecking) {
+    public init(adb: any RelayDeviceTransport, healthClient: any RelayHealthChecking) {
         self.adb = adb
         self.healthClient = healthClient
     }
 
     public func prepare(device: AdbDevice, secret: Data) async throws -> RelayPreparation {
         guard device.state == .authorized else { throw DroidBridgeError.deviceUnauthorized(serial: device.serial) }
-        guard try await adb.packagePath(serial: device.serial, package: Self.androidPackage) != nil else {
-            throw DroidBridgeError.relayAppNotRunning
-        }
+        try await adb.prepareDevice(serial: device.serial)
 
         try await adb.forward(serial: device.serial, hostPort: Self.pairingPort, devicePort: Self.pairingPort)
         do {
@@ -66,7 +84,7 @@ public struct RelayPreparer: Sendable {
             return RelayPreparation(health: health)
         } catch {
             // relay not answering yet: nudge the app to the foreground, then surface the error
-            try? await adb.startActivity(serial: device.serial, component: Self.activity)
+            try? await adb.activateApp(serial: device.serial)
             try? await adb.removeForward(serial: device.serial, hostPort: Self.relayPort)
             try? await adb.removeForward(serial: device.serial, hostPort: Self.pairingPort)
             throw error

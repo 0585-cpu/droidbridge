@@ -68,7 +68,8 @@ class RelayServer(
     fun start(port: Int = DBP_PORT) {
         val socket = ServerSocket().apply {
             reuseAddress = false
-            bind(InetSocketAddress(InetAddress.getLoopbackAddress(), port), 128)
+            // Android getLoopbackAddress() is ::1; DBAM's fixed service target is IPv4.
+            bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), port), 128)
         }
         serverSocket = socket
         val serverScope = CoroutineScope(Dispatchers.IO + SupervisorJob())

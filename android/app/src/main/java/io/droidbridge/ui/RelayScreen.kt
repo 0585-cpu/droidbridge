@@ -14,13 +14,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.droidbridge.pairing.PairingUiState
+import io.droidbridge.usb.UsbAccessoryStatus
 
 @Composable
-fun RelayScreen(viewModel: RelayViewModel) {
+fun RelayScreen(viewModel: RelayViewModel, onConnectUSB: () -> Unit = {}) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val usbStatus by UsbAccessoryStatus.state.collectAsStateWithLifecycle()
 
     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Status: ${state.relayStatus}")
+        Text("USB: $usbStatus")
+        OutlinedButton(onClick = onConnectUSB) { Text("Connect USB") }
         Text("Cellular: ${state.cellularStatus}${state.carrierName?.let { " ($it)" } ?: ""}")
         Text("Paired Mac: ${state.pairedMacName ?: "none"}")
         Text("Active flows: ${state.activeFlows}")

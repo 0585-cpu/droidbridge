@@ -124,6 +124,7 @@ class RelayServerTest {
     fun `binds loopback only`() {
         start(FakeBackend())
         assertTrue(server.boundAddress!!.isLoopbackAddress)
+        assertEquals("127.0.0.1", server.boundAddress!!.hostAddress)
     }
 
     @Test

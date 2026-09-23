@@ -1,5 +1,8 @@
 # DroidBridge B2 UDP/QUIC 설계 확장 명세
 
+> 2026-09-23 전송 변경: [AOA 설계](../specs/2026-09-23-droidbridge-aoa-design.md)가 이 문서의 ADB 제품 경로를 대체한다.
+> **2026-09-23 보충:** [설계 보충](2026-09-23-droidbridge-udp-traffic-profile-design.md)의 helper 통합, 현재 DNS interception 보존 및 B2 이후 선택형 TTL·트래픽 프로필 범위가 이 문서의 관련 설명보다 우선한다.
+
 - 문서 상태: B1 승인 명세를 확장하는 B2 구현 기준
 - 작성일: 2026-09-21
 - 대상 릴리스: `v0.2.0-b2`

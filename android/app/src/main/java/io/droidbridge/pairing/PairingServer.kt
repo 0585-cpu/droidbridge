@@ -61,12 +61,13 @@ class PairingServer(private val port: Int = DEFAULT_PORT) {
     private var serverSocket: ServerSocket? = null
 
     val boundPort: Int get() = serverSocket?.localPort ?: -1
+    val boundAddress: InetAddress? get() = serverSocket?.inetAddress
 
     fun open() {
         val socket = ServerSocket()
         try {
             socket.reuseAddress = true
-            socket.bind(InetSocketAddress(InetAddress.getLoopbackAddress(), port), 1)
+            socket.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), port), 1)
             serverSocket = socket
         } catch (error: IOException) {
             try { socket.close() } catch (_: IOException) { /* bind already failed */ }

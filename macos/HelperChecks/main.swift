@@ -82,6 +82,12 @@ private func testRecoveryStateStoreRoundTrip() throws {
     check(loaded == expected, "recovery state should round-trip")
     let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
     check(mode?.intValue == 0o600, "recovery state permissions should be 0600")
+    let updated = HelperRecoveryState(utun: "utun10", pfEnableToken: nil)
+    try store.save(updated)
+    let replaced = try store.load()
+    check(replaced == updated, "recovery journal replaces an existing record atomically")
+    let updatedMode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+    check(updatedMode?.intValue == 0o600, "replaced journal remains owner-only")
     try store.remove()
     let removed = try store.load()
     check(removed == nil, "recovery state should be removable")

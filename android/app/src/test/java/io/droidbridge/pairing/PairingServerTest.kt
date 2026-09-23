@@ -19,13 +19,24 @@ import kotlin.test.assertIs
 
 class PairingServerTest {
     @Test
+    fun `pairing listener binds the IPv4 service address`() {
+        val server = PairingServer(0)
+        try {
+            server.open()
+            assertEquals("127.0.0.1", server.boundAddress!!.hostAddress)
+            Socket("127.0.0.1", server.boundPort).close()
+        } finally { server.close() }
+    }
+
+    @Test
     fun `occupied pairing port reports failure instead of crashing the app`() {
         ServerSocket().use { occupied ->
-            occupied.bind(InetSocketAddress(InetAddress.getLoopbackAddress(), PairingServer.DEFAULT_PORT))
+            occupied.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0))
             val facade = AppPairingFacade(
                 store = InMemoryPairingSecretStore(),
                 androidDisplayName = "Test Android",
                 scope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob()),
+                serverFactory = { PairingServer(occupied.localPort) },
             )
 
             facade.beginPairing()
@@ -41,7 +52,7 @@ class PairingServerTest {
         first.open()
         val port = first.boundPort
         val accepted = async { first.acceptOne() }
-        val client = Socket(InetAddress.getLoopbackAddress(), port)
+        val client = Socket(InetAddress.getByName("127.0.0.1"), port)
         val channel = accepted.await()
         channel.close()
         client.close()
@@ -62,6 +73,7 @@ class PairingServerTest {
             store = InMemoryPairingSecretStore(),
             androidDisplayName = "Test Android",
             scope = scope,
+            serverFactory = { PairingServer(0) },
         )
         try {
             facade.beginPairing()

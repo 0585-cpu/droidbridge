@@ -1,7 +1,7 @@
 import SwiftUI
 import DroidBridgeShared
 
-/// Menu-bar host app. The coordinator/adapter are constructed lazily; the real ADB, pairing, relay,
+/// Menu-bar host app. The coordinator/adapter are constructed lazily; the AOA, pairing, relay,
 /// and privileged-helper wiring is assembled here.
 @main
 struct DroidBridgeApp: App {
@@ -16,8 +16,8 @@ struct DroidBridgeApp: App {
 
     @MainActor
     private static func makeAdapter() -> DroidBridgeCoordinatorAdapter {
-        let executable = (try? AdbExecutableLocator().locate()) ?? URL(fileURLWithPath: "/opt/homebrew/bin/adb")
-        let adb = AdbClient(executable: executable, runner: FoundationProcessRunner())
+        let library = Bundle.main.bundleURL.appendingPathComponent("Contents/Frameworks/libusb-1.0.0.dylib")
+        let adb = AoaDeviceLink(libraryPath: library.path)
         guard let keychainAccessGroup = RuntimeSigningIdentity.keychainAccessGroup() else {
             preconditionFailure("DroidBridgeTeamIdentifier is missing or invalid")
         }
@@ -33,7 +33,7 @@ struct DroidBridgeApp: App {
         )
         return DroidBridgeCoordinatorAdapter(
             core: core,
-            devices: { (try? await adb.devices()) ?? [] },
+            devices: { try await adb.devices() },
             adb: adb,
             helper: HelperClient(),
             configStore: FileRuntimeConfigurationStore(directory: configurationDirectory),

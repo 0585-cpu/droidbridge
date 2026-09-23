@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct HelperRecoveryState: Codable, Equatable {
     /// Informational: which interface the tunnel owned. Recovery does not need
@@ -54,12 +55,25 @@ final class HelperRecoveryStateStore {
 
     func save(_ state: HelperRecoveryState) throws {
         let data = try JSONEncoder().encode(state)
-        try data.write(to: url, options: [.atomic, .completeFileProtection])
-        try fileManager.setAttributes(
-            [.posixPermissions: NSNumber(value: Int16(0o600))],
-            ofItemAtPath: url.path
-        )
+        // A system daemon must recover before a user unlocks the session. File-protection
+        // classes can reject writes on macOS; use an atomic, owner-only POSIX journal.
+        let temporary = url.deletingLastPathComponent().appendingPathComponent(".recovery-\(UUID().uuidString)")
+        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { throw posixError() }
+        defer { Darwin.close(fd); try? fileManager.removeItem(at: temporary) }
+        try data.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                let written = Darwin.write(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                if written < 0 && errno == EINTR { continue }
+                guard written > 0 else { throw posixError() }
+                offset += written
+            }
+        }
+        guard fsync(fd) == 0, rename(temporary.path, url.path) == 0 else { throw posixError() }
     }
+
+    private func posixError() -> NSError { NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
 
     func remove() throws {
         guard fileManager.fileExists(atPath: url.path) else { return }

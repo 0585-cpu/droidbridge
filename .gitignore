@@ -40,4 +40,5 @@ android/**/build/
 # xcode generated
 DroidBridge.xcodeproj/
 macos/Shared/.build/
+macos/USB/.build/
 *.xcodeproj/

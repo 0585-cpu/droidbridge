@@ -35,6 +35,9 @@ jobs:
           python3 tools/generate_protocol_vectors.py --check
       - name: Python tests
         run: python3 -m unittest discover -s tools/tests -p 'test_*.py' -v
+      - name: macOS protocol and USB transport checks (no device required)
+        if: runner.os == 'macOS'
+        run: make check-macos check-macos-usb
       - name: C tests (ASan/UBSan)
         run: |
           cmake -S core -B build/core-asan -DCMAKE_BUILD_TYPE=Debug \

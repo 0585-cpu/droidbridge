@@ -33,8 +33,8 @@ public final class DroidBridgeCoordinatorAdapter {
     public private(set) var helperOperationInProgress = false
 
     private let core: DroidBridgeCoordinatorCore
-    private let devices: () async -> [AdbDevice]
-    private let adb: any RelayAdb
+    private let devices: () async throws -> [AdbDevice]
+    private let adb: any RelayDeviceTransport
     private let helper: HelperClient
     private let configStore: any RuntimeConfigurationStore
     private let secretStore: any PairingSecretStore
@@ -44,11 +44,12 @@ public final class DroidBridgeCoordinatorAdapter {
     private var pairingApproval: CheckedContinuation<Bool, Never>?
     private var monitorTask: Task<Void, Never>?
     private var statusTask: Task<Void, Never>?
+    private var transportOperationInProgress = false
 
     public init(
         core: DroidBridgeCoordinatorCore,
-        devices: @escaping () async -> [AdbDevice],
-        adb: any RelayAdb,
+        devices: @escaping () async throws -> [AdbDevice],
+        adb: any RelayDeviceTransport,
         helper: HelperClient,
         configStore: any RuntimeConfigurationStore,
         secretStore: any PairingSecretStore
@@ -91,7 +92,17 @@ public final class DroidBridgeCoordinatorAdapter {
     }
 
     public func refresh() async {
-        let snapshot = await devices()
+        // USB disappears briefly while switching into accessory mode.
+        guard !transportOperationInProgress else { return }
+        let snapshot: [AdbDevice]
+        do { snapshot = try await devices() }
+        catch {
+            tunnelMessage = error.localizedDescription
+            await core.setFailed(error.localizedDescription)
+            state = await core.state
+            return
+        }
+        guard !transportOperationInProgress else { return }
         deviceSnapshot = snapshot
 
         let selectedStillPresent = selectedDevice.map { selected in
@@ -135,12 +146,15 @@ public final class DroidBridgeCoordinatorAdapter {
     /// Starts the Mac side after the user has opened "Pair New Mac" on Android. Connection attempts
     /// are retried during the Android 60-second pairing window, so button ordering is not fragile.
     public func pair() async {
+        guard !transportOperationInProgress else { return }
+        transportOperationInProgress = true
+        defer { transportOperationInProgress = false }
         guard let device = selectedDevice else {
             tunnelMessage = "Select an authorized Android device first."
             return
         }
         resolvePairingApproval(false)
-        tunnelMessage = "On Android, tap Pair New Mac, then compare the code."
+        tunnelMessage = "Allow DroidBridge USB access on Android, then tap Pair New Mac and compare the code."
         await core.beginPairing()
         state = await core.state
 
@@ -150,7 +164,7 @@ public final class DroidBridgeCoordinatorAdapter {
                 hostPort: RelayPreparer.pairingPort,
                 devicePort: RelayPreparer.pairingPort
             )
-            try? await adb.startActivity(serial: device.serial, component: RelayPreparer.activity)
+            try? await adb.activateApp(serial: device.serial)
 
             let client = PairingClient(
                 connectionFactory: { try await Self.connectForPairing() },
@@ -196,6 +210,9 @@ public final class DroidBridgeCoordinatorAdapter {
     public func rejectPairing() { resolvePairingApproval(false) }
 
     public func prepareRelay() async {
+        guard !transportOperationInProgress else { return }
+        transportOperationInProgress = true
+        defer { transportOperationInProgress = false }
         guard let device = selectedDevice else {
             tunnelMessage = "Select the paired Android device first."
             return
@@ -230,7 +247,7 @@ public final class DroidBridgeCoordinatorAdapter {
     }
 
     public func forgetPairing() async {
-        guard !helperOperationInProgress else { return }
+        guard !helperOperationInProgress, !transportOperationInProgress else { return }
         if tunnelRunning { await stopTunnel() }
         guard !tunnelRunning else { return }
         if let configuration = try? configStore.read() {
@@ -245,7 +262,7 @@ public final class DroidBridgeCoordinatorAdapter {
     }
 
     public func disconnect() async {
-        guard !helperOperationInProgress else { return }
+        guard !helperOperationInProgress, !transportOperationInProgress else { return }
         if tunnelRunning {
             await stopTunnel()
             guard !tunnelRunning else { return }
@@ -256,8 +273,9 @@ public final class DroidBridgeCoordinatorAdapter {
     }
 
     public func startTunnel() async {
-        guard !tunnelRunning, beginHelperOperation() else { return }
-        defer { helperOperationInProgress = false }
+        guard !tunnelRunning, !transportOperationInProgress, beginHelperOperation() else { return }
+        transportOperationInProgress = true
+        defer { helperOperationInProgress = false; transportOperationInProgress = false }
         tunnelMessage = "Installing privileged helper…"
         do {
             guard let configuration = try configStore.read() else {
@@ -350,9 +368,20 @@ public final class DroidBridgeCoordinatorAdapter {
     }
 
     public func reconnectTunnel() async {
-        guard beginHelperOperation() else { return }
-        defer { helperOperationInProgress = false }
+        guard !transportOperationInProgress, beginHelperOperation() else { return }
+        transportOperationInProgress = true
+        defer { helperOperationInProgress = false; transportOperationInProgress = false }
         do {
+            guard let configuration = try configStore.read(), let device = selectedDevice,
+                  device.serial == configuration.deviceSerial,
+                  var secret = try secretStore.load(peerId: configuration.keychainAccount) else {
+                throw DroidBridgeError.invalidConfiguration("connect the paired phone to the same USB port first")
+            }
+            defer { secret.resetBytes(in: 0..<secret.count) }
+            tunnelMessage = "Reconnecting USB accessory…"
+            let prepared = try await prepareRelayConnection(device: device, configuration: configuration, secret: secret)
+            await core.relayPrepared(serial: device.serial, health: prepared.health)
+            state = await core.state
             try await helper.reconnect()
             tunnelMessage = "Rechecking the cellular relay…"
             startStatusPolling()

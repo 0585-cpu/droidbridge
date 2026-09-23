@@ -54,13 +54,14 @@ class RelayServiceController(
         }
     }
 
-    override fun start() {
+    @Synchronized override fun start() {
+        if (server.port >= 0) return
         _state.value = _state.value.onStartRequested()
         controller.start()
         server.start()
     }
 
-    override fun stop() {
+    @Synchronized override fun stop() {
         _state.value = _state.value.onStopRequested()
         server.stop()
         controller.stop()

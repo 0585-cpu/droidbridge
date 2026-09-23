@@ -1,5 +1,8 @@
 # DroidBridge B1–B3 Delivery Roadmap
 
+> 2026-09-23 전송 변경: [AOA 설계](../specs/2026-09-23-droidbridge-aoa-design.md)가 이 문서의 ADB 제품 경로를 대체한다.
+> **2026-09-23 개정:** 현행 개발 순서·helper 통합 경로·TTL/트래픽 프로필 범위는 [새 통합 계획](2026-09-23-droidbridge-udp-traffic-profile-plan.md)을 우선한다. 아래는 기존 단계와 상세 계획의 참조 기록이다. NetworkExtension 요구와 향후 TTL 금지 조건은 새 설계로 대체되었으며 B1 기본 프로필의 수용시험 기준은 유지한다.
+
 > **For agentic workers:** 각 단계는 선행 release gate를 통과한 뒤에만 진행한다. 구현 시 `superpowers:subagent-driven-development` 또는 `superpowers:executing-plans`를 사용하고, 각 계획의 체크박스를 task-by-task로 추적한다.
 
 **Goal:** Android LTE/5G를 Mac의 fail-closed full-tunnel 출구로 사용하는 DroidBridge를 B1 IPv4/TCP에서 B2 IPv4/UDP·QUIC, B3 dual-stack·복구 안정화까지 순차적으로 완성한다.

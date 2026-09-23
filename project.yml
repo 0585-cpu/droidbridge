@@ -6,6 +6,8 @@ options:
 packages:
   DroidBridgeShared:
     path: macos/Shared
+  DroidBridgeUSB:
+    path: macos/USB
 targets:
   DroidBridgeHelper:
     type: tool
@@ -85,11 +87,16 @@ targets:
             subpath: Contents/Library/LaunchDaemons
     dependencies:
       - package: DroidBridgeShared
+      - package: DroidBridgeUSB
       - target: DroidBridgeHelper
         embed: true
         copy:
           destination: wrapper
           subpath: Contents/Library/LaunchDaemons
+    postBuildScripts:
+      - name: Embed signed libusb and license
+        script: '"$SRCROOT/scripts/embed-libusb.sh"'
+        basedOnDependencyAnalysis: false
     info:
       path: macos/HostApp/Resources/Info.plist
       properties:
@@ -103,6 +110,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.droidbridge.macos
         PRODUCT_NAME: DroidBridge
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
         CODE_SIGN_ENTITLEMENTS: macos/HostApp/Resources/HostApp.entitlements
         SWIFT_VERSION: "6.0"
         MARKETING_VERSION: "0.1.0"

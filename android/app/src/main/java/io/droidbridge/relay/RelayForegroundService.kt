@@ -6,11 +6,18 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.BroadcastReceiver
+import android.hardware.usb.UsbAccessory
+import android.hardware.usb.UsbManager
+import androidx.core.content.ContextCompat
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import io.droidbridge.R
 import io.droidbridge.state.RelayStatus
+import io.droidbridge.usb.UsbAccessorySession
+import io.droidbridge.usb.UsbAccessoryStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
@@ -24,18 +31,44 @@ class RelayForegroundService : Service() {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private lateinit var controller: RelayServiceController
     private var notificationUpdates: Job? = null
+    private lateinit var usb: UsbAccessorySession
+    private val detached = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == UsbManager.ACTION_USB_ACCESSORY_DETACHED) {
+                @Suppress("DEPRECATION")
+                val accessory = intent.getParcelableExtra<UsbAccessory>(UsbManager.EXTRA_ACCESSORY)
+                accessory?.let(usb::detached)
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         controller = RelayServiceController.shared(applicationContext)
+        usb = UsbAccessorySession(getSystemService(UsbManager::class.java))
+        ContextCompat.registerReceiver(this, detached, IntentFilter(UsbManager.ACTION_USB_ACCESSORY_DETACHED), ContextCompat.RECEIVER_NOT_EXPORTED)
         createChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> {
+            ACTION_START, ACTION_CONNECT_USB -> {
                 startForegroundCompat(buildNotification(RelayStatus.STARTING, 0, 0, 0))
-                controller.start()
+                try {
+                    controller.start()
+                    if (intent.action == ACTION_CONNECT_USB) {
+                        @Suppress("DEPRECATION")
+                        val accessory = intent.getParcelableExtra<UsbAccessory>(UsbManager.EXTRA_ACCESSORY)
+                            ?: error("USB accessory is missing")
+                        usb.connect(accessory)
+                    }
+                } catch (error: Exception) {
+                    UsbAccessoryStatus.mutable.value = error.message ?: "Cannot start USB relay"
+                    usb.close()
+                    controller.stop()
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
                 notificationUpdates?.cancel()   // a repeated Start must not stack collectors
                 notificationUpdates = scope.launch {
                     controller.state.collectLatest { state ->
@@ -46,6 +79,7 @@ class RelayForegroundService : Service() {
                 }
             }
             ACTION_STOP -> {
+                usb.close()
                 controller.stop()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -55,6 +89,8 @@ class RelayForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        unregisterReceiver(detached)
+        usb.close()
         // The relay is process-wide and shared with the UI: stop it, but keep it usable for the
         // next Start (shutting down its scope here would break every later start).
         controller.stop()
@@ -94,6 +130,7 @@ class RelayForegroundService : Service() {
 
     companion object {
         const val ACTION_START = "io.droidbridge.action.START"
+        const val ACTION_CONNECT_USB = "io.droidbridge.action.CONNECT_USB"
         const val ACTION_STOP = "io.droidbridge.action.STOP"
         private const val CHANNEL_ID = "droidbridge.relay"
         private const val NOTIFICATION_ID = 1
