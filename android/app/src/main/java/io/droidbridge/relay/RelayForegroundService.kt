@@ -12,6 +12,7 @@ import android.os.IBinder
 import io.droidbridge.R
 import io.droidbridge.state.RelayStatus
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -22,10 +23,11 @@ import kotlinx.coroutines.launch
 class RelayForegroundService : Service() {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private lateinit var controller: RelayServiceController
+    private var notificationUpdates: Job? = null
 
     override fun onCreate() {
         super.onCreate()
-        controller = RelayServiceController.create(applicationContext)
+        controller = RelayServiceController.shared(applicationContext)
         createChannel()
     }
 
@@ -34,7 +36,8 @@ class RelayForegroundService : Service() {
             ACTION_START -> {
                 startForegroundCompat(buildNotification(RelayStatus.STARTING, 0, 0, 0))
                 controller.start()
-                scope.launch {
+                notificationUpdates?.cancel()   // a repeated Start must not stack collectors
+                notificationUpdates = scope.launch {
                     controller.state.collectLatest { state ->
                         val metrics = controller.metrics.value
                         notificationManager().notify(NOTIFICATION_ID,
@@ -52,8 +55,9 @@ class RelayForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        // The relay is process-wide and shared with the UI: stop it, but keep it usable for the
+        // next Start (shutting down its scope here would break every later start).
         controller.stop()
-        controller.shutdown()
         scope.cancel()
         super.onDestroy()
     }
