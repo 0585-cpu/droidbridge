@@ -40,6 +40,7 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
     private let stateLock = NSLock()
     private let routeController: RouteController
     private let pfController: PfController
+    private let dnsController: DnsController
     private let recoveryStore: HelperRecoveryStateStore
     private var utun: UtunDevice?
     private var tunnelController: TunnelController?
@@ -56,6 +57,7 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
         bundleID: String = "io.droidbridge.macos",
         routeController: RouteController = RouteController(),
         pfController: PfController = PfController(),
+        dnsController: DnsController = DnsController(),
         recoveryStore: HelperRecoveryStateStore = HelperRecoveryStateStore()
     ) {
         peerRequirement = HelperCodeRequirement.string(
@@ -64,6 +66,7 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
         )
         self.routeController = routeController
         self.pfController = pfController
+        self.dnsController = dnsController
         self.recoveryStore = recoveryStore
         super.init()
     }
@@ -85,6 +88,9 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
             )
             if let token = state.pfEnableToken {
                 try pfController.adoptRecoveryToken(token)
+            }
+            if let dns = state.dnsServers {
+                try dnsController.adoptRecoveryState(dns)
             }
             recoveryAttentionRequired = true
             runtimeStatus = .teardownFailed
@@ -137,7 +143,8 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
             guard !recoveryAttentionRequired,
                   !recoveryStore.hasPersistedState,
                   !routeController.isConfigured,
-                  !pfController.isEnabled
+                  !pfController.isEnabled,
+                  !dnsController.isConfigured
             else {
                 throw HelperServiceError.recoveryRequired
             }
@@ -182,6 +189,20 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
             )
             try routeController.installDefault()
 
+            // DNS last: the resolver only moves into the tunnel once PF and the
+            // route already confine traffic to it. Journal the originals before
+            // touching any service so a crash can still put them back.
+            let dnsOriginals = try dnsController.capture()
+            try recoveryStore.save(
+                HelperRecoveryState(
+                    gateway: gateway,
+                    utun: openedDevice.interfaceName,
+                    pfEnableToken: pfEnableToken,
+                    dnsServers: dnsOriginals
+                )
+            )
+            try dnsController.apply(dnsOriginals)
+
             let runningController = Self.makeTunnelController(
                 device: openedDevice,
                 configuration: configuration,
@@ -207,7 +228,8 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
             controller?.stop()
             if let device {
                 do {
-                    // Reverse ordering is equally important: route first, protection last.
+                    // Reverse ordering is equally important: DNS, then route, protection last.
+                    try dnsController.restore()
                     try routeController.restore()
                     try pfController.disable()
                     try recoveryStore.remove()
@@ -258,6 +280,7 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
             cellularAvailable: cellularReady,
             tunnelActive: utun != nil || tunnelController != nil
                 || routeController.isConfigured || pfController.isEnabled
+                || dnsController.isConfigured
                 || recoveryStore.hasPersistedState || recoveryAttentionRequired,
             runtimeStatus: runtimeStatus
         )
@@ -278,7 +301,8 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
                 try restorePersistedStateLocked()
             } else {
                 // Defensive fallback for an in-memory transaction whose journal
-                // could not be created. Route still precedes PF teardown.
+                // could not be created. DNS and route still precede PF teardown.
+                try dnsController.restore()
                 try routeController.restore()
                 try pfController.disable()
             }
@@ -303,6 +327,13 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
 
     private func restorePersistedStateLocked() throws {
         guard let state = try recoveryStore.load() else { return }
+
+        // A journal written before DNS was applied carries no originals; an
+        // in-memory apply whose journal write failed is still restored.
+        if let dns = state.dnsServers, !dnsController.isConfigured {
+            try dnsController.adoptRecoveryState(dns)
+        }
+        try dnsController.restore()
 
         if !routeController.isConfigured {
             try routeController.adoptRecoveryState(

@@ -6,6 +6,10 @@ struct HelperRecoveryState: Codable, Equatable {
     /// Nil while PF setup is in flight. Persisting the intent first closes the
     /// crash window between loading the anchor and receiving the PF token.
     let pfEnableToken: String?
+    /// Each service's DNS before the tunnel pointed it at 198.18.0.1; `[]`
+    /// means DHCP-provided. Optional (and defaulted) so journals written by a
+    /// helper that predates DNS handling still decode after an upgrade.
+    var dnsServers: [String: [String]]? = nil
 }
 
 enum HelperRecoveryStateStoreError: LocalizedError {

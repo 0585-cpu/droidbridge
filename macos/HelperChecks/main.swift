@@ -289,6 +289,120 @@ private func testTunnelStartupPreflightsBeforeRouteMutation() async {
     }
 }
 
+private func networksetup(_ arguments: [String], _ result: HelperCommandResult) -> ExpectedCommand {
+    ExpectedCommand(executable: "/usr/sbin/networksetup", arguments: arguments, result: result)
+}
+
+private func resolverFlush() -> [ExpectedCommand] {
+    [
+        ExpectedCommand(executable: "/usr/bin/dscacheutil", arguments: ["-flushcache"], result: result()),
+        ExpectedCommand(executable: "/usr/bin/killall", arguments: ["-HUP", "mDNSResponder"], result: result()),
+    ]
+}
+
+private let dnsServiceOrder = """
+An asterisk (*) denotes that a network service is disabled.
+(1) USB 10/100/1000 LAN
+(Hardware Port: USB 10/100/1000 LAN, Device: en7)
+
+(2) Wi-Fi
+(Hardware Port: Wi-Fi, Device: en0)
+
+(3) Tailscale
+(Hardware Port: io.tailscale.ipn.macos, Device: )
+"""
+
+/// The tunnel must send the system resolver into 198.18.0.1 and, on stop, put
+/// back exactly what the user had — including a manual list, which a naive
+/// "reset to DHCP" would erase.
+private func testDnsApplyAndRestorePreserveManualServers() throws {
+    let runner = ScriptedRunner([
+        networksetup(["-listnetworkserviceorder"], result(0, dnsServiceOrder)),
+        networksetup(["-getdnsservers", "USB 10/100/1000 LAN"], result(0, "8.8.8.8\n")),
+        networksetup(["-getdnsservers", "Wi-Fi"], result(0, "There aren't any DNS Servers set on Wi-Fi.\n")),
+        networksetup(["-setdnsservers", "USB 10/100/1000 LAN", "198.18.0.1"], result()),
+        networksetup(["-setdnsservers", "Wi-Fi", "198.18.0.1"], result()),
+    ] + resolverFlush() + [
+        networksetup(["-setdnsservers", "USB 10/100/1000 LAN", "8.8.8.8"], result()),
+        networksetup(["-setdnsservers", "Wi-Fi", "Empty"], result()),
+    ] + resolverFlush())
+    let controller = DnsController(run: runner.run)
+    let originals = try controller.capture()
+    check(originals == ["USB 10/100/1000 LAN": ["8.8.8.8"], "Wi-Fi": []],
+          "capture should record manual and DHCP-provided DNS per service")
+    try controller.apply(originals)
+    check(controller.isConfigured, "applied DNS must be tracked for restore")
+    try controller.restore()
+    check(!controller.isConfigured, "a successful restore clears the tracked state")
+    check(runner.isEmpty, "every scripted DNS command should be consumed")
+}
+
+/// An unreadable service must stop the start before anything is changed:
+/// guessing "DHCP" would later restore Empty over a manual setting.
+private func testDnsCaptureRefusesUnreadableService() throws {
+    let runner = ScriptedRunner([
+        networksetup(["-listnetworkserviceorder"], result(0, dnsServiceOrder)),
+        networksetup(["-getdnsservers", "USB 10/100/1000 LAN"], result(0, "** Error: The parameters were not valid.\n")),
+    ])
+    let controller = DnsController(run: runner.run)
+    do {
+        _ = try controller.capture()
+        check(false, "capture should reject an unrecognized -getdnsservers answer")
+    } catch {}
+    check(!controller.isConfigured, "a failed capture must not claim configured DNS")
+    check(runner.isEmpty, "no DNS setting may be changed after a failed capture")
+}
+
+/// A failed restore keeps the originals so Stop can be retried, like PF and routes.
+private func testDnsRestoreFailureRetainsStateForRetry() throws {
+    let runner = ScriptedRunner([
+        networksetup(["-setdnsservers", "Wi-Fi", "Empty"], result(4, "** Error\n")),
+    ] + resolverFlush() + [
+        networksetup(["-setdnsservers", "Wi-Fi", "Empty"], result()),
+    ] + resolverFlush())
+    let controller = DnsController(run: runner.run)
+    try controller.adoptRecoveryState(["Wi-Fi": []])
+    do {
+        try controller.restore()
+        check(false, "the first DNS restore should fail")
+    } catch {}
+    check(controller.isConfigured, "a failed DNS restore must retain its originals")
+    try controller.restore()
+    check(!controller.isConfigured, "a successful retry clears the originals")
+    check(runner.isEmpty, "every DNS retry command should be consumed")
+}
+
+private func testDnsRecoveryRejectsInvalidJournal() {
+    let controller = DnsController(run: { _, _, _ in result() })
+    do {
+        try controller.adoptRecoveryState(["Wi-Fi": ["8.8.8.8; rm -rf /"]])
+        check(false, "a tampered DNS journal entry must be rejected")
+    } catch {}
+    check(!controller.isConfigured, "a rejected journal must not be adopted")
+}
+
+private func testRecoveryStateCarriesDnsAndReadsOldJournals() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("droidbridge-helper-checks-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("recovery.json")
+    let store = HelperRecoveryStateStore(url: url)
+    let expected = HelperRecoveryState(
+        gateway: "203.0.113.1", utun: "utun9", pfEnableToken: "7",
+        dnsServers: ["Wi-Fi": [], "USB 10/100/1000 LAN": ["8.8.8.8"]]
+    )
+    try store.save(expected)
+    let loaded = try store.load()
+    check(loaded == expected, "a journal with DNS originals should round-trip")
+
+    // A journal written by a helper that predates DNS handling must still load,
+    // or an upgrade would strand a retained fail-closed state.
+    try Data(#"{"gateway":"203.0.113.1","utun":"utun9","pfEnableToken":"7"}"#.utf8).write(to: url)
+    let legacy = try store.load()
+    check(legacy != nil && legacy?.dnsServers == nil, "a pre-DNS journal should load with no DNS originals")
+}
+
 do {
     try testRouteRestoreRetryDoesNotRedeleteUtun()
     try testPersistedRouteRecoveryIsIdempotent()
@@ -299,7 +413,12 @@ do {
     try testInstallerDetectsStaleInstalledHelper()
     testEnginePollTimerRunsAndStops()
     await testTunnelStartupPreflightsBeforeRouteMutation()
-    print("helper checks: 9 passed, 0 failed")
+    try testDnsApplyAndRestorePreserveManualServers()
+    try testDnsCaptureRefusesUnreadableService()
+    try testDnsRestoreFailureRetainsStateForRetry()
+    testDnsRecoveryRejectsInvalidJournal()
+    try testRecoveryStateCarriesDnsAndReadsOldJournals()
+    print("helper checks: 14 passed, 0 failed")
 } catch {
     FileHandle.standardError.write(Data("FAIL: \(error.localizedDescription)\n".utf8))
     exit(EXIT_FAILURE)
