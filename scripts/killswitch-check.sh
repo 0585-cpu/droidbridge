@@ -64,7 +64,7 @@ except socket.timeout:
     verdict = "hung"
 except OSError as e:
     verdict = f"error:{errno.errorcode.get(e.errno, e.errno)}"
-open(out, "w").write(f"{verdict} {time.time() - start:.2f}")
+open(out, "w").write(f"{verdict} {time.time() - start:.2f}\n")
 PY
 probe_pid=$!
 for _ in $(seq 1 60); do [[ -s "$work/ready" ]] && break; sleep 0.1; done
@@ -108,7 +108,10 @@ fi
 echo go >"$work/go"
 wait "$probe_pid" 2>/dev/null || true
 probe_pid=""
-read -r verdict elapsed <"$work/result" || { verdict="none"; elapsed="?"; }
+# read exits 1 at EOF without a newline even though it filled the variables, so
+# never let its status overwrite a verdict that was actually read.
+verdict="none"; elapsed="?"
+if [[ -s "$work/result" ]]; then read -r verdict elapsed <"$work/result" || true; fi
 if [[ "$verdict" != "reset" ]] || ! awk "BEGIN{exit !($elapsed < 2)}"; then
   echo "FAIL: a pre-protection connection was '$verdict' after ${elapsed}s instead of reset at once" >&2
   exit 1
