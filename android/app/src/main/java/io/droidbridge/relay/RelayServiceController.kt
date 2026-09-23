@@ -74,6 +74,15 @@ class RelayServiceController(
     fun shutdown() = scope.cancel()
 
     companion object {
+        @Volatile private var shared: RelayServiceController? = null
+
+        /**
+         * The single relay for this process. The foreground service and the UI must share it: two
+         * instances would both try to own the loopback relay port and would disagree about state.
+         */
+        fun shared(context: Context): RelayServiceController =
+            shared ?: synchronized(this) { shared ?: create(context.applicationContext).also { shared = it } }
+
         fun create(context: Context): RelayServiceController {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
