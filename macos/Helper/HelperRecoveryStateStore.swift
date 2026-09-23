@@ -1,15 +1,12 @@
 import Foundation
 
 struct HelperRecoveryState: Codable, Equatable {
-    let gateway: String
+    /// Informational: which interface the tunnel owned. Recovery does not need
+    /// it — withdrawing the network service is idempotent and keyed by a fixed id.
     let utun: String
     /// Nil while PF setup is in flight. Persisting the intent first closes the
     /// crash window between loading the anchor and receiving the PF token.
     let pfEnableToken: String?
-    /// Each service's DNS before the tunnel pointed it at 198.18.0.1; `[]`
-    /// means DHCP-provided. Optional (and defaulted) so journals written by a
-    /// helper that predates DNS handling still decode after an upgrade.
-    var dnsServers: [String: [String]]? = nil
 }
 
 enum HelperRecoveryStateStoreError: LocalizedError {
@@ -23,9 +20,9 @@ enum HelperRecoveryStateStoreError: LocalizedError {
     }
 }
 
-/// Root-owned crash recovery journal. It is deliberately persisted before the
-/// default route moves so a restarted helper can restore connectivity and then
-/// release only the PF reference that it acquired.
+/// Root-owned crash recovery journal. It is deliberately persisted before PF
+/// loads and the tunnel becomes the primary network, so a restarted helper can
+/// withdraw the network service and release only the PF reference it acquired.
 final class HelperRecoveryStateStore {
     static let defaultURL = URL(
         fileURLWithPath: "/Library/PrivilegedHelperTools/io.droidbridge.recovery.json"

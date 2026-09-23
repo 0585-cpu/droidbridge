@@ -79,7 +79,7 @@ user session                              root
 ## 5. Data Flow
 
 **Outbound (Mac → internet):**
-1. Helper creates `utun`, address `198.18.0.2/30`, sets the **default route to utun** (relay,
+1. Helper creates `utun`, address `198.18.0.2/30`, and **publishes it to configd as a network service with `OverridePrimary`** (keys `State:/Network/Service/<id>/{IPv4,DNS}`), so configd itself makes utun the primary network — default route and system resolver — and keeps it there across network changes (relay,
    loopback, and local subnets excepted).
 2. Mac app packets → utun → helper reads fd (strips the 4-byte AF header) → `engine.ingest()`.
 3. The C engine terminates TCP via lwIP, opens one `RelayFlowConnection` per flow →
