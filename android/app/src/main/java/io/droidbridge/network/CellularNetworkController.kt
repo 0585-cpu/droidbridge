@@ -1,17 +1,17 @@
 package io.droidbridge.network
 
+import io.droidbridge.policy.DestinationDeniedException
 import io.droidbridge.policy.DestinationPolicy
 import io.droidbridge.protocol.OpenDestination
-import java.net.InetAddress
-import java.net.InetSocketAddress
-import java.net.Socket
+import java.io.Closeable
+import java.net.*
 import java.util.concurrent.CopyOnWriteArrayList
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.withContext
 
 class CellularUnavailableException(message: String = "cellular unavailable") : Exception(message)
+class AddressFamilyUnavailableException : Exception("address family unavailable")
 
 sealed interface CellularState {
     data object Unavailable : CellularState
@@ -20,82 +20,105 @@ sealed interface CellularState {
     data object Lost : CellularState
 }
 
-private const val CONNECT_TIMEOUT_MS = 10_000
+data class CellularSnapshot(val network: NetworkHandle,val generation: Long)
 
-/**
- * Owns the selected cellular Network and opens outbound sockets bound to it. Every connect snapshots a
- * (network, generation) pair; if the network is replaced or lost at any point the connect fails closed
- * rather than falling back to Wi-Fi or another interface.
- */
+/** Owns every cellular socket from before connect through release. Replacement, loss and Stop retire
+ * the entire generation, including sockets whose connect operation is still pending. */
 class CellularNetworkController(private val facade: ConnectivityFacade) : CellularCallback {
-    private val _state = MutableStateFlow<CellularState>(CellularState.Unavailable)
+    private val _state=MutableStateFlow<CellularState>(CellularState.Unavailable)
     val state: StateFlow<CellularState> = _state
+    private val lossListeners=CopyOnWriteArrayList<() -> Unit>()
+    private val sockets=mutableSetOf<Closeable>()
+    private var network: NetworkHandle?=null
+    private var generation=0L
+    private var running=false
 
-    private val lossListeners = CopyOnWriteArrayList<() -> Unit>()
-
-    @Volatile private var network: NetworkHandle? = null
-    @Volatile private var generation: Long = 0
-
-    fun start() {
-        _state.value = CellularState.Requesting
-        facade.requestCellular(this)
+    @Synchronized fun start() { if(running) return; running=true; _state.value=CellularState.Requesting; facade.requestCellular(this) }
+    @Synchronized fun stop() { running=false; facade.unregister(this); retire(); network=null; _state.value=CellularState.Unavailable }
+    fun addLossListener(listener: () -> Unit) { lossListeners+=listener }
+    @Synchronized fun currentNetwork(): NetworkHandle?=network
+    @Synchronized fun currentGeneration(): Long=generation
+    fun currentDnsServers(): List<InetAddress> = currentNetwork()?.let { facade.dnsServers(it) } ?: emptyList()
+    fun ipv6Available(): Boolean = currentNetwork()?.let { facade.supportsIpv6(it) } ?: false
+    fun nat64Prefix(): ByteArray?=currentNetwork()?.let { facade.nat64Prefix(it) }
+    @Synchronized fun snapshot(): CellularSnapshot = CellularSnapshot(network ?: throw CellularUnavailableException(),generation)
+    @Synchronized fun requireCurrent(snapshot: CellularSnapshot) { if(!running || network != snapshot.network || generation != snapshot.generation) throw CellularUnavailableException("network generation retired") }
+    @Synchronized fun track(snapshot: CellularSnapshot,socket: Closeable) {
+        try { requireCurrent(snapshot); sockets+=socket } catch(e: Exception) { socket.close(); throw e }
     }
-
-    fun stop() {
-        facade.unregister(this)
-        network = null
-        _state.value = CellularState.Unavailable
+    @Synchronized fun release(socket: Closeable) { sockets-=socket; facade.releaseSocket(socket) }
+    @Synchronized override fun onAvailable(network: NetworkHandle,carrierName: String?) {
+        if(!running) return
+        if(this.network != network) { retire(); this.network=network }
+        _state.value=CellularState.Available(network,carrierName)
     }
-
-    fun addLossListener(listener: () -> Unit) { lossListeners += listener }
-
-    fun currentNetwork(): NetworkHandle? = network
-    fun currentDnsServers(): List<InetAddress> = network?.let { facade.dnsServers(it) } ?: emptyList()
-
-    override fun onAvailable(network: NetworkHandle, carrierName: String?) {
-        this.network = network
-        generation++
-        _state.value = CellularState.Available(network, carrierName)
+    @Synchronized override fun onLost(network: NetworkHandle) {
+        if(this.network == network) { retire(); this.network=null; _state.value=CellularState.Lost }
     }
+    @Synchronized override fun onChanged(network: NetworkHandle) { if(running && this.network == network) retire() }
+    private fun retire() { generation++; sockets.toList().forEach { runCatching { it.close() }; facade.releaseSocket(it) }; sockets.clear(); lossListeners.forEach { it() } }
 
-    override fun onLost(network: NetworkHandle) {
-        if (this.network == network || this.network == null) {
-            this.network = null
-            generation++
-            _state.value = CellularState.Lost
-            lossListeners.forEach { it() }
-        }
+    fun requireAllowed(address: InetAddress) {
+        if(address.address.size==16) {
+            val result=DestinationPolicy.evaluateIpv6(address.address,nat64Prefix())
+            if(!result.allowed) throw DestinationDeniedException(result)
+            if(!ipv6Available()) throw AddressFamilyUnavailableException()
+        } else DestinationPolicy.requireAllowed(address)
     }
-
-    suspend fun connectTcp(destination: OpenDestination): Socket = withContext(Dispatchers.IO) {
-        val snapshotNetwork = network ?: throw CellularUnavailableException()
-        val snapshotGeneration = generation
-
-        val candidates = when (destination) {
-            is OpenDestination.Ipv4 -> listOf(InetAddress.getByAddress(destination.address))
-            is OpenDestination.Domain -> {
-                val resolved = facade.resolve(snapshotNetwork, destination.host)
-                DestinationPolicy.filterResolved(destination.host, resolved)
+    suspend fun connectTcp(destination: OpenDestination,policy: SocketEgressPolicy=SocketEgressPolicy()): Socket {
+        var opened: Socket?=null
+        try {
+            return withContext(Dispatchers.IO) {
+                val snapshot=snapshot()
+                val candidates=when(destination) {
+                    is OpenDestination.Ipv4 -> listOf(InetAddress.getByAddress(destination.address))
+                    is OpenDestination.Ipv6 -> listOf(Inet6Address.getByAddress(null,destination.address,-1))
+                    is OpenDestination.Domain -> facade.resolve(snapshot.network,destination.host).filter { address ->
+                        if(address.address.size==16) ipv6Available() && DestinationPolicy.evaluateIpv6(address.address,nat64Prefix()).allowed
+                        else DestinationPolicy.evaluate(address).allowed
+                    }.also { if(it.isEmpty()) throw DestinationDeniedException(io.droidbridge.policy.PolicyResult.DENY_RESERVED) }
+                }
+                requireCurrent(snapshot)
+                var last: Exception?=null
+                for(address in candidates) {
+                    requireAllowed(address)
+                    val socket=facade.createSocket(snapshot.network); opened=socket
+                    try {
+                        track(snapshot,socket)
+                        facade.applyPolicy(socket,address,policy)
+                        requireCurrent(snapshot)
+                        socket.connect(InetSocketAddress(address,destination.port),10_000)
+                        requireCurrent(snapshot); ensureActive()
+                        return@withContext socket
+                    } catch(e: Exception) {
+                        socket.close(); release(socket); opened=null
+                        if(e is CellularUnavailableException || e is SocketPolicyException || e is CancellationException) throw e
+                        last=e
+                    }
+                }
+                throw last ?: CellularUnavailableException()
             }
-        }
-        if (generation != snapshotGeneration || network !== snapshotNetwork) throw CellularUnavailableException("network changed during resolve")
-
-        var lastError: Exception? = null
-        for (address in candidates) {
-            DestinationPolicy.requireAllowed(address) // re-check the exact connect target (DNS rebinding guard)
-            val socket = facade.createSocket(snapshotNetwork)
-            try {
-                if (generation != snapshotGeneration || network !== snapshotNetwork) throw CellularUnavailableException("network changed before connect")
-                socket.connect(InetSocketAddress(address, destination.port), CONNECT_TIMEOUT_MS)
-                return@withContext socket
-            } catch (e: CellularUnavailableException) {
-                socket.close()
-                throw e
-            } catch (e: java.io.IOException) {
-                socket.close()
-                lastError = e
+        } catch(e: Exception) { opened?.let { it.close(); release(it) }; throw e }
+    }
+    suspend fun connectUdp(destination: OpenDestination,policy: SocketEgressPolicy=SocketEgressPolicy()): DatagramSocket {
+        var opened: DatagramSocket?=null
+        try {
+            return withContext(Dispatchers.IO) {
+                val snapshot=snapshot()
+                val address=when(destination) {
+                    is OpenDestination.Ipv4 -> InetAddress.getByAddress(destination.address)
+                    is OpenDestination.Ipv6 -> Inet6Address.getByAddress(null,destination.address,-1)
+                    is OpenDestination.Domain -> throw IllegalArgumentException("UDP requires literal address")
+                }
+                requireAllowed(address)
+                val socket=facade.createDatagramSocket(snapshot.network); opened=socket
+                track(snapshot,socket)
+                facade.applyPolicy(socket,address,policy)
+                requireCurrent(snapshot)
+                socket.connect(InetSocketAddress(address,destination.port))
+                requireCurrent(snapshot); ensureActive()
+                socket
             }
-        }
-        throw lastError?.let { CellularUnavailableException("connect failed: ${it.message}") } ?: CellularUnavailableException()
+        } catch(e: Exception) { opened?.let { it.close(); release(it) }; throw e }
     }
 }

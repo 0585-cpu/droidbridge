@@ -57,6 +57,7 @@ private class FakeBackend(
     override suspend fun connect(destination: OpenDestination): Socket {
         connectCalls.incrementAndGet()
         val addr = when (destination) {
+            is OpenDestination.Ipv6 -> InetAddress.getByAddress(destination.address)
             is OpenDestination.Ipv4 -> InetAddress.getByAddress(destination.address)
             is OpenDestination.Domain -> InetAddress.getByName("93.184.216.34")
         }

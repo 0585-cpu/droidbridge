@@ -21,10 +21,18 @@ data class RelayUiState(
     val uploadedBytes: Long = 0,
     val downloadedBytes: Long = 0,
     val error: String? = null,
+    val profile: io.droidbridge.relay.TrafficProfile = io.droidbridge.relay.TrafficProfile(),
+    val profileError: String? = null,
+    val capabilities: Long = 0,
+    val activeUdp: Int = 0,
+    val udpDrops: Long = 0,
+    val uploadRate: Long = 0,
+    val downloadRate: Long = 0,
     val pairing: PairingUiState = PairingUiState.Closed,
 ) {
     val isPaired: Boolean get() = pairedMacName != null
     val canStart: Boolean get() = isPaired && (relayStatus == RelayStatus.STOPPED || relayStatus == RelayStatus.FAILED)
+    val canEditProfile: Boolean get() = relayStatus == RelayStatus.STOPPED || relayStatus == RelayStatus.FAILED
     val canStop: Boolean get() = relayStatus != RelayStatus.STOPPED && relayStatus != RelayStatus.STOPPING
 }
 
@@ -33,11 +41,11 @@ class RelayViewModel(
     private val store: PairingSecretStore,
     private val pairing: PairingFacade,
 ) : ViewModel() {
-    private val _uiState = MutableStateFlow(RelayUiState(pairedMacName = store.load()?.displayName))
+    private val _uiState = MutableStateFlow(RelayUiState(pairedMacName = store.load()?.displayName,profile=controller.profile.value))
     val uiState: StateFlow<RelayUiState> = _uiState
 
     init {
-        combine(controller.state, controller.metrics, pairing.state) { relay, metrics, pairingState ->
+        combine(controller.state, controller.metrics, pairing.state, controller.profile, controller.capabilities) { relay, metrics, pairingState, profile, capabilities ->
             _uiState.value.copy(
                 relayStatus = relay.relayStatus,
                 cellularStatus = relay.cellularStatus,
@@ -45,11 +53,29 @@ class RelayViewModel(
                 activeFlows = metrics.activeFlows,
                 uploadedBytes = metrics.uploadedBytes,
                 downloadedBytes = metrics.downloadedBytes,
-                error = relay.lastError,
+                error = metrics.policyError ?: relay.lastError,
+                profile = profile,
+                capabilities = capabilities,
+                activeUdp = metrics.activeUdp,
+                udpDrops = metrics.udpDrops,
+                uploadRate = metrics.uploadBytesPerSecond,
+                downloadRate = metrics.downloadBytesPerSecond,
                 pairing = pairingState,
                 pairedMacName = store.load()?.displayName,
             )
         }.onEach { _uiState.value = it }.launchIn(viewModelScope)
+    }
+
+    fun saveProfile(ttl: String,hop: String,domains: String,upload: String,download: String,burst: String) {
+        try {
+            check(_uiState.value.canEditProfile) { "Stop the relay before editing the profile" }
+            fun optional(value: String): Int? = value.trim().takeIf {it.isNotEmpty()}?.toInt()
+            val profile=io.droidbridge.relay.TrafficProfile(
+                io.droidbridge.network.SocketEgressPolicy(optional(ttl),optional(hop)),
+                domains.split(',', '\n').map {it.trim()}.filter {it.isNotEmpty()},optional(upload) ?: 0,optional(download) ?: 0,optional(burst) ?: 65536)
+            check(controller.updateProfile(profile)) { "Stop the relay before editing the profile" }
+            _uiState.value=_uiState.value.copy(profile=profile,profileError=null)
+        } catch(e: Exception) { _uiState.value=_uiState.value.copy(profileError="Invalid profile: TTL/Hop Limit 1–255; nonnegative rates; burst 1,232–4,194,304 bytes. Stop before editing.") }
     }
 
     fun onStartClicked() { if (_uiState.value.canStart) controller.start() }

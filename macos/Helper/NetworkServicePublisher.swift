@@ -33,7 +33,10 @@ final class NetworkServicePublisher {
         try apply(script)
         for attempt in 0..<attempts {
             let answer = try query(TunnelNetworkService.primaryQuery)
-            if TunnelNetworkService.primaryInterface(from: answer) == utun { return }
+            if TunnelNetworkService.primaryInterface(from: answer) == utun {
+                let ipv6 = try query(TunnelNetworkService.primaryIPv6Query)
+                if TunnelNetworkService.primaryInterface(from: ipv6) == utun { return }
+            }
             if attempt + 1 < attempts { Thread.sleep(forTimeInterval: pollInterval) }
         }
         throw failure(ETIMEDOUT, "configd did not make \(utun) the primary network")

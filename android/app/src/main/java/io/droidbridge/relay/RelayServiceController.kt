@@ -28,12 +28,18 @@ import kotlinx.coroutines.launch
 class RelayServiceController(
     private val store: PairingSecretStore,
     private val controller: CellularNetworkController,
+    private val profileStore: TrafficProfileStore = MemoryTrafficProfileStore(),
+    private val relayPort: Int = RelayServer.DBP_PORT,
 ) : RelayController {
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val _state = MutableStateFlow(RelayState())
     override val state: StateFlow<RelayState> = _state
 
+    private val _profile = MutableStateFlow(profileStore.load())
+    override val profile: StateFlow<TrafficProfile> = _profile
+    private val _capabilities = MutableStateFlow(0L)
+    override val capabilities: StateFlow<Long> = _capabilities
     private val backend = AndroidRelayBackend(controller)
     private val server = RelayServer(
         SessionAuthenticator({ store.load()?.secret }, NonceReplayCache(clock = EpochClock.SYSTEM), EpochClock.SYSTEM),
@@ -43,6 +49,9 @@ class RelayServiceController(
 
     init {
         controller.addLossListener(server::cancelActiveFlows)
+        scope.launch {
+            while(true) { _capabilities.value=backend.capabilities().flags; server.metrics.tick(); kotlinx.coroutines.delay(1000) }
+        }
         scope.launch {
             controller.state.collect { cellular ->
                 _state.value = when (cellular) {
@@ -57,8 +66,9 @@ class RelayServiceController(
     @Synchronized override fun start() {
         if (server.port >= 0) return
         _state.value = _state.value.onStartRequested()
+        backend.beginRun(_profile.value)
         controller.start()
-        server.start()
+        server.start(relayPort)
     }
 
     @Synchronized override fun stop() {
@@ -66,6 +76,13 @@ class RelayServiceController(
         server.stop()
         controller.stop()
         _state.value = _state.value.onStopped()
+    }
+
+    @Synchronized override fun updateProfile(profile: TrafficProfile): Boolean {
+        if(server.port>=0 || _state.value.relayStatus !in listOf(io.droidbridge.state.RelayStatus.STOPPED,io.droidbridge.state.RelayStatus.FAILED)) return false
+        val snapshot=profile.copy(dnsSuffixes=profile.dnsSuffixes.toList())
+        profileStore.save(snapshot); _profile.value=snapshot
+        return true
     }
 
     override fun forgetPeer() {
@@ -88,7 +105,7 @@ class RelayServiceController(
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
             val store = AndroidPairingSecretStore.create(context)
-            return RelayServiceController(store, CellularNetworkController(AndroidCellularTransport(cm, tm)))
+            return RelayServiceController(store, CellularNetworkController(AndroidCellularTransport(cm, tm)), AndroidTrafficProfileStore(context.getSharedPreferences("traffic-profile",Context.MODE_PRIVATE)))
         }
     }
 }

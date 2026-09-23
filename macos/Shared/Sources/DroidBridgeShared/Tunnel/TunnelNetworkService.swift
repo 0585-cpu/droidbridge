@@ -17,6 +17,9 @@ public enum TunnelNetworkService {
     /// The utun peer: the virtual gateway and the virtual DNS resolver.
     public static let gateway = "198.18.0.1"
 
+    public static let ipv6Address = "fd42:6472:6f69::2"
+    public static let ipv6Gateway = "fd42:6472:6f69::1"
+
     /// scutil commands that publish the service, or nil when `utun` is not a
     /// plain utun name (it is interpolated into the script).
     public static func publishScript(utun: String) -> String? {
@@ -32,6 +35,13 @@ public enum TunnelNetworkService {
             "d.add OverridePrimary # 1",
             "set State:/Network/Service/\(serviceID)/IPv4",
             "d.init",
+            "d.add Addresses * \(ipv6Address)",
+            "d.add PrefixLength * # 64",
+            "d.add InterfaceName \(utun)",
+            "d.add Router \(ipv6Gateway)",
+            "d.add OverridePrimary # 1",
+            "set State:/Network/Service/\(serviceID)/IPv6",
+            "d.init",
             "d.add ServerAddresses * \(gateway)",
             "set State:/Network/Service/\(serviceID)/DNS",
             "quit",
@@ -42,11 +52,14 @@ public enum TunnelNetworkService {
     /// also the crash-recovery path.
     public static let removeScript = [
         "remove State:/Network/Service/\(serviceID)/IPv4",
+        "remove State:/Network/Service/\(serviceID)/IPv6",
         "remove State:/Network/Service/\(serviceID)/DNS",
         "quit",
     ].joined(separator: "\n") + "\n"
 
     public static let primaryQuery = "show State:/Network/Global/IPv4\nquit\n"
+
+    public static let primaryIPv6Query = "show State:/Network/Global/IPv6\nquit\n"
 
     /// Reads `PrimaryInterface` from `show State:/Network/Global/IPv4`.
     public static func primaryInterface(from output: String) -> String? {

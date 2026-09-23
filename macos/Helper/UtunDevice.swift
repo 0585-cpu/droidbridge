@@ -131,6 +131,11 @@ final class UtunDevice: @unchecked Sendable {
         guard process.terminationStatus == 0 else {
             throw UtunError.command("ifconfig \(interfaceName)", process.terminationStatus)
         }
+        let ipv6 = Process()
+        ipv6.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
+        ipv6.arguments = [interfaceName, "inet6", TunnelNetworkService.ipv6Address, TunnelNetworkService.ipv6Gateway, "prefixlen", "64", "alias"]
+        try ipv6.run(); ipv6.waitUntilExit()
+        guard ipv6.terminationStatus == 0 else { throw UtunError.command("ifconfig IPv6 \(interfaceName)", ipv6.terminationStatus) }
     }
 
     @discardableResult

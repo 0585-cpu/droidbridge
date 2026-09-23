@@ -79,6 +79,19 @@ typedef struct {
     uint16_t local_port;
 } db_flow_mapping_t;
 
+/* Validated complete IP envelope. IPv6 extensions are bounded (4 headers/256 bytes).
+ * All callers must validate the upper-layer checksum before rewriting/synthesis. */
+typedef struct {
+    uint8_t family, protocol, ttl;
+    uint8_t src[16], dst[16];
+    size_t transport_offset, transport_length, total_length;
+} db_ip_view_t;
+db_packet_status_t db_ip_parse(const uint8_t *packet, size_t length, db_ip_view_t *view);
+uint16_t db_transport_checksum(const db_ip_view_t *, const uint8_t *transport, size_t length);
+/* Builds an IP envelope around an already initialized upper-layer message. */
+size_t db_ip_build(uint8_t family, uint8_t protocol, const uint8_t *src, const uint8_t *dst,
+                   const uint8_t *transport, size_t length, uint8_t *out, size_t capacity);
+
 /* Parsing (validates version/IHL/length/fragment; does not verify checksums). */
 db_packet_status_t db_ipv4_parse(const uint8_t *packet, size_t length, db_ipv4_view_t *view);
 db_packet_status_t db_tcp_parse(const uint8_t *packet, size_t length, const db_ipv4_view_t *ip, db_tcp_view_t *view);

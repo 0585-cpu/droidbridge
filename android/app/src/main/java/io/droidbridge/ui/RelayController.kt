@@ -8,6 +8,9 @@ import kotlinx.coroutines.flow.StateFlow
 interface RelayController {
     val state: StateFlow<RelayState>
     val metrics: StateFlow<RelayMetricsSnapshot>
+    val profile: StateFlow<io.droidbridge.relay.TrafficProfile> get() = RelayDefaults.profile
+    val capabilities: StateFlow<Long> get() = RelayDefaults.capabilities
+    fun updateProfile(profile: io.droidbridge.relay.TrafficProfile): Boolean = false
     fun start()
     fun stop()
     fun forgetPeer()
@@ -20,4 +23,9 @@ interface PairingFacade {
     fun approve()
     fun reject()
     fun cancel()
+}
+
+private object RelayDefaults {
+    val profile= kotlinx.coroutines.flow.MutableStateFlow(io.droidbridge.relay.TrafficProfile())
+    val capabilities= kotlinx.coroutines.flow.MutableStateFlow(0L)
 }

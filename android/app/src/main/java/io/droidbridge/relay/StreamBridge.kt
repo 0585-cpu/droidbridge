@@ -31,14 +31,14 @@ class StreamBridge(
     private val bufferSize: Int = 64 * 1024,
 ) {
     /** Returns (aToB, bToA) byte counts. `a` is the DBP client, `b` the remote cellular socket. */
-    suspend fun copyBidirectional(a: BridgeEnd, b: BridgeEnd): Pair<Long, Long> = withContext(Dispatchers.IO) {
+    suspend fun copyBidirectional(a: BridgeEnd, b: BridgeEnd, traffic: RelayTrafficPolicy = RelayTrafficPolicy(), onTransfer: (Long,Long) -> Unit = {_,_->}): Pair<Long, Long> = withContext(Dispatchers.Default) {
         val aToB = AtomicLong()
         val bToA = AtomicLong()
         lateinit var jobAtoB: Job
         lateinit var jobBtoA: Job
 
-        jobAtoB = launch { copyLoop(a, b, aToB) }
-        jobBtoA = launch { copyLoop(b, a, bToA) }
+        jobAtoB = launch { copyLoop(a, b, aToB, traffic.profile.burstBytes, traffic::upload) { onTransfer(it,0) } }
+        jobBtoA = launch { copyLoop(b, a, bToA, traffic.profile.burstBytes, traffic::download) { onTransfer(0,it) } }
 
         // A grace watcher runs in its own coroutine (never inside a copy job) so the two copies never
         // wait on each other — mutual join would deadlock.
@@ -50,17 +50,18 @@ class StreamBridge(
         aToB.get() to bToA.get()
     }
 
-    private suspend fun copyLoop(from: BridgeEnd, to: BridgeEnd, counter: AtomicLong) {
-        val buffer = ByteArray(bufferSize)
+    private suspend fun copyLoop(from: BridgeEnd, to: BridgeEnd, counter: AtomicLong, burst: Int, shape: suspend (Int) -> Unit, onTransfer: (Long) -> Unit) {
+        val buffer = ByteArray(minOf(bufferSize,burst))
         try {
             while (true) {
                 // runInterruptible lets the idle withTimeout actually interrupt a blocked read()
-                val read = withTimeout(idleMs) { runInterruptible { from.input.read(buffer) } }
+                val read = withTimeout(idleMs) { runInterruptible(RelayDispatchers.socketReads) { from.input.read(buffer) } }
                 if (read < 0) break
                 if (read > 0) {
-                    to.output.write(buffer, 0, read)
-                    to.output.flush()
+                    shape(read)
+                    runInterruptible(RelayDispatchers.socketWrites) { to.output.write(buffer, 0, read); to.output.flush() }
                     counter.addAndGet(read.toLong())
+                    onTransfer(read.toLong())
                 }
             }
         } catch (e: TimeoutCancellationException) {

@@ -1,21 +1,22 @@
 # DroidBridge
 
-Use an Android phone's LTE/5G as a fail-closed IPv4 TCP/DNS tunnel exit for a Mac over USB
-(Android Open Accessory / AOA). Android root and macOS kernel extensions are not required. The app does not alter TTL,
-APN, DUN, or carrier settings and does not claim to change how a carrier bills or classifies traffic.
+Use an Android phone's LTE/5G as a fail-closed TCP, UDP and DNS tunnel exit for a Mac
+over USB (Android Open Accessory / AOA). Supports IPv4 and capability-gated IPv6/ICMP Echo,
+with optional socket TTL/Hop Limit, DNS suffix filtering, and shared upload/download rate limits.
+Android root and macOS kernel extensions are not required. APN, DUN and carrier settings are
+unchanged; no claim is made about carrier billing or traffic classification.
 
-Status: **AOA transport implemented; real-device acceptance pending** (IPv4 TCP + DNS).
-The [AOA plan](docs/superpowers/plans/2026-09-23-droidbridge-aoa-plan.md) replaces the product
-ADB transport. USB debugging and a host ADB installation are no longer required for use.
-The [next development plan](docs/superpowers/plans/2026-09-23-droidbridge-udp-traffic-profile-plan.md)
-adds general UDP/QUIC, optional socket TTL and traffic controls, then IPv6 and recovery improvements.
-Those features are not implemented by this transport change.
+Status: **AOA, UDP/QUIC transport, traffic profiles and dual-stack software implemented;
+real-device acceptance pending.** QUIC is carried as UDP without terminating TLS or QUIC.
+The [implementation plan](docs/superpowers/plans/2026-09-23-droidbridge-udp-traffic-profile-plan.md)
+distinguishes software checks from the [remaining physical acceptance](docs/udp-ipv6-device-acceptance.md).
+USB debugging and host ADB are not required for the app connection.
 
 ## Layout
 
 ```text
 macos/      HostApp + signed privileged utun helper + dormant Packet Tunnel target
-core/       C17 DBP/1 codec, destination policy, packet engine (later: lwIP)
+core/       C17 DBP/1 codec, destination policy, lwIP TCP and dual-stack UDP/ICMP packet engine
 protocol/   DBP/1 wire spec and canonical test vectors (Python generator)
 tools/      check_environment, vector generator, dbp_probe, mock_relay
 android/    Cellular-bound relay app (Kotlin)
@@ -26,7 +27,7 @@ docs/       specs, plans, threat model, operations
 
 - macOS 14+, Apple Silicon
 - cmake ≥ 3.28, clang (Xcode CLT), Python ≥ 3.11
-- App builds: Xcode, XcodeGen, Android SDK, JDK 17
+- App builds: Xcode, XcodeGen, Android SDK, JDK 17, NDK/CMake (small socket-option readback library)
 - Android API 26+ device with USB accessory support, a USB data cable
 - libusb 1.0.30 is built from a verified source archive and bundled; Homebrew is not a runtime requirement.
 

@@ -15,6 +15,9 @@ class ServiceBackedRelayController(
 ) : RelayController {
     override val state = relay.state
     override val metrics = relay.metrics
+    override val profile = relay.profile
+    override val capabilities = relay.capabilities
+    override fun updateProfile(profile: TrafficProfile): Boolean = relay.updateProfile(profile)
 
     override fun start() = startService()
 

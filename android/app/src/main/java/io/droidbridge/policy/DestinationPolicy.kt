@@ -46,13 +46,33 @@ object DestinationPolicy {
     )
 
     fun evaluate(address: InetAddress): PolicyResult =
-        if (address is Inet4Address) evaluate(address.address) else PolicyResult.UNSUPPORTED_ADDRESS_FAMILY
+        evaluate(address.address)
 
     fun evaluate(bytes: ByteArray): PolicyResult {
+        if (bytes.size == 16) return evaluateIpv6(bytes)
         if (bytes.size != 4) return PolicyResult.UNSUPPORTED_ADDRESS_FAMILY
         val value = ((bytes[0].toLong() and 0xFF) shl 24) or ((bytes[1].toLong() and 0xFF) shl 16) or
             ((bytes[2].toLong() and 0xFF) shl 8) or (bytes[3].toLong() and 0xFF)
         for (range in blocked) if ((value and range.mask) == range.network) return range.result
+        return PolicyResult.ALLOW
+    }
+
+    /** Global unicast only, with the standard NAT64 prefix checked against IPv4 policy. */
+    fun evaluateIpv6(bytes: ByteArray, nat64Prefix: ByteArray? = null): PolicyResult {
+        if (bytes.size != 16) return PolicyResult.UNSUPPORTED_ADDRESS_FAMILY
+        val wellKnown = byteArrayOf(0, 0x64, -1, -101) + ByteArray(8)
+        if (bytes.copyOf(12).contentEquals(wellKnown) ||
+            (nat64Prefix?.size == 16 && bytes.copyOf(12).contentEquals(nat64Prefix.copyOf(12)))) {
+            return evaluate(bytes.copyOfRange(12,16))
+        }
+        val a = bytes.map { it.toInt() and 255 }
+        if (a[0] and 0xe0 != 0x20) return PolicyResult.DENY_RESERVED
+        // IETF special assignments (includes Teredo, benchmarking and both ORCHID prefixes),
+        // documentation, 6to4 (which can hide a private IPv4 address), and new documentation block.
+        if (a[0] == 0x20 && a[1] == 1 && a[2] < 2) return PolicyResult.DENY_RESERVED
+        if (a[0] == 0x20 && a[1] == 1 && a[2] == 0x0d && a[3] == 0xb8) return PolicyResult.DENY_DOCUMENTATION
+        if (a[0] == 0x20 && a[1] == 2) return PolicyResult.DENY_RESERVED
+        if (a[0] == 0x3f && a[1] == 0xff && a[2] < 0x10) return PolicyResult.DENY_DOCUMENTATION
         return PolicyResult.ALLOW
     }
 

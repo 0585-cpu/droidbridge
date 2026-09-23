@@ -9,6 +9,10 @@ protocol EngineBridgeDelegate: AnyObject {
     func engineSendFlow(_ flow: UInt32, _ data: Data) -> Int
     func engineCloseFlow(_ flow: UInt32, reason: Int)
     func engineSendDNS(_ flow: UInt32, _ query: Data)
+    func engineOpenUDP(_ flow: UInt32, dstIP: [UInt8], port: UInt16)
+    func engineSendUDP(_ flow: UInt32, _ data: Data)
+    func engineCloseUDP(_ flow: UInt32)
+    func engineSendICMP(_ request: UInt32, family: UInt8, dstIP: Data, ttl: UInt8, payload: Data)
 }
 
 /// Thread-safe wrapper around the C data-plane engine. Every C call and callback runs on one serial
@@ -29,6 +33,11 @@ final class EngineBridge: @unchecked Sendable {
         config.context = Unmanaged.passUnretained(self).toOpaque()
         config.emit_packet = db_bridge_emit
         config.open_flow = db_bridge_open
+        config.open_flow_ip = db_bridge_open_ip
+        config.open_udp = db_bridge_open_udp
+        config.send_udp = db_bridge_send_udp
+        config.close_udp = db_bridge_close_udp
+        config.send_icmp = db_bridge_icmp
         config.send_flow = db_bridge_send
         config.close_flow = db_bridge_close
         config.send_dns = db_bridge_dns
@@ -58,7 +67,11 @@ final class EngineBridge: @unchecked Sendable {
 
     func stop() {
         pollTimer.stop()
-        queue.sync { delegate = nil }
+        queue.sync {
+            delegate = nil
+            if let engine { db_engine_destroy(engine) }
+            engine = nil
+        }
     }
 
     func poll() { queue.async { [self] in db_engine_poll(engine) } }
@@ -84,6 +97,35 @@ final class EngineBridge: @unchecked Sendable {
         }
     }
 
+    func setCapabilities(_ caps: RelayCapabilities) {
+        queue.async { [self] in
+            caps.nat64Prefix.withUnsafeBytes { raw in
+                _ = db_engine_set_nat64_prefix(engine, raw.bindMemory(to: UInt8.self).baseAddress, caps.nat64PrefixLength)
+            }
+            db_engine_set_capabilities(engine, caps.flags)
+        }
+    }
+    func blockCapabilities() { queue.async { [self] in db_engine_set_capabilities(engine, 0) } }
+    /// Backpressure the framed reader until C consumes this datagram: at most one delivery per flow.
+    func udpData(_ flow: UInt32, _ data: Data) async {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                data.withUnsafeBytes { raw in
+                    _ = db_engine_on_udp_data(engine, flow, raw.bindMemory(to: UInt8.self).baseAddress, data.count)
+                }
+                continuation.resume()
+            }
+        }
+    }
+    func udpClosed(_ flow: UInt32) { queue.async { [self] in _ = db_engine_on_udp_closed(engine, flow) } }
+    func icmpResponse(_ request: UInt32, _ data: Data) {
+        queue.async { [self] in data.withUnsafeBytes { raw in
+            _ = db_engine_on_icmp_response(engine, request, raw.bindMemory(to: UInt8.self).baseAddress, data.count)
+        } }
+    }
+    func icmpFailed(_ request: UInt32) { queue.async { [self] in _ = db_engine_on_icmp_failed(engine, request) } }
+    var activeUDP: Int { queue.sync { db_engine_udp_flow_count(engine) } }
+    var udpDrops: UInt64 { queue.sync { db_engine_udp_drop_count(engine) } }
     var activeFlows: Int { queue.sync { db_engine_active_flow_count(engine) } }
 }
 

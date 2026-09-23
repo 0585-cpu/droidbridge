@@ -53,7 +53,13 @@ struct MenuBarContentView: View {
             if let metrics = adapter.tunnelMetrics {
                 VStack(alignment: .leading) {
                     Text("Tunnel: \(metrics.runtimeStatus.displayText)")
-                    Text("Active flows: \(metrics.activeFlows)")
+                    Text("Active flows: \(metrics.activeFlows) · UDP: \(metrics.activeUDP)")
+                    Text("UDP drops: \(metrics.udpDrops)")
+                    if let caps = metrics.capabilities {
+                        Text("IPv6: \(caps.supports(.tcp6) ? "available" : "blocked") · UDP: \(caps.supports(.udp4) || caps.supports(.udp6) ? "available" : "blocked")")
+                        Text("TTL: \(caps.ipv4TTL == 0 ? "default" : String(caps.ipv4TTL)) · Hop Limit: \(caps.ipv6HopLimit == 0 ? "default" : String(caps.ipv6HopLimit))")
+                        if caps.policyFlags != 0 { Text("DNS filter: \(caps.policyFlags & 1 != 0 ? "on" : "off") · Rate limits: \(caps.policyFlags & 2 != 0 ? "on" : "off")") }
+                    }
                     if let carrier = metrics.carrierName {
                         Text("Carrier: \(carrier)")
                     }

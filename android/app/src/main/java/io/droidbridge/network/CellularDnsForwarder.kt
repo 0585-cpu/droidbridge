@@ -21,9 +21,19 @@ interface DnsTransport {
  * has the TC bit, whole operation bounded to 5s. Transaction id and QR bit are verified; names are never
  * cached or logged.
  */
-class CellularDnsForwarder(private val transport: DnsTransport) {
+class CellularDnsForwarder(
+    private val transport: DnsTransport,
+    private val filter: io.droidbridge.policy.DnsDomainFilter = io.droidbridge.policy.DnsDomainFilter(emptyList()),
+    private val ipv6Available: () -> Boolean = { true },
+) {
     suspend fun query(queryPacket: ByteArray): ByteArray {
         DnsWire.validateForwardable(queryPacket)
+        val questions=DnsQuestions.read(queryPacket)
+        if(questions.any { filter.blocks(it.name) }) return DnsQuestions.emptyResponse(queryPacket,questions,3)
+        if(!ipv6Available() && questions.any { it.type==28 }) return DnsQuestions.emptyResponse(queryPacket,questions,0)
+        // Non-AAAA questions with actual AAAA answers (notably ANY) conservatively return
+        // NODATA when IPv6 is absent. Authority/additional glue is preserved unchanged.
+        fun gated(response: ByteArray): ByteArray = if(!ipv6Available() && DnsQuestions.containsAaaaAnswer(response)) DnsQuestions.emptyResponse(queryPacket,questions,0) else response
         val expectedId = DnsWire.transactionId(queryPacket)
         val servers = transport.dnsServers()
         if (servers.isEmpty()) throw DnsFailureException(DnsFailure.NO_SERVERS)
@@ -40,7 +50,7 @@ class CellularDnsForwarder(private val transport: DnsTransport) {
                         continue
                     }
                     val validated = validate(udp, expectedId)
-                    if (!DnsWire.isTruncated(validated)) return@withTimeout validated
+                    if (!DnsWire.isTruncated(validated)) return@withTimeout gated(validated)
                     // truncated: retry the SAME server over TCP
                     val tcp = try {
                         transport.queryTcp(server, queryPacket, PER_SERVER_TCP_MS)
@@ -49,7 +59,7 @@ class CellularDnsForwarder(private val transport: DnsTransport) {
                     } catch (e: java.io.IOException) {
                         continue
                     }
-                    return@withTimeout validate(tcp, expectedId)
+                    return@withTimeout gated(validate(tcp, expectedId))
                 }
                 throw DnsFailureException(if (sawTimeout) DnsFailure.TIMEOUT else DnsFailure.IO_ERROR)
             }

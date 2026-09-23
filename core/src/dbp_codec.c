@@ -33,6 +33,10 @@ static int message_type_is_known(uint8_t type) {
     case DBP_MESSAGE_OPEN_TCP: case DBP_MESSAGE_OPEN_OK: case DBP_MESSAGE_OPEN_ERROR:
     case DBP_MESSAGE_DNS_QUERY: case DBP_MESSAGE_DNS_RESPONSE:
     case DBP_MESSAGE_HEALTH: case DBP_MESSAGE_HEALTH_RESPONSE:
+    case DBP_MESSAGE_CAPABILITIES: case DBP_MESSAGE_CAPABILITIES_RESPONSE:
+    case DBP_MESSAGE_OPEN_UDP: case DBP_MESSAGE_OPEN_UDP_OK:
+    case DBP_MESSAGE_OPEN_UDP_ERROR: case DBP_MESSAGE_UDP_CLOSE:
+    case DBP_MESSAGE_ICMP_ECHO: case DBP_MESSAGE_ICMP_ECHO_RESPONSE: case DBP_MESSAGE_ICMP_ECHO_ERROR:
         return 1;
     default:
         return 0;
@@ -90,6 +94,10 @@ dbp_status_t dbp_encode_open_tcp(const dbp_open_tcp_t *open,
         length = 4;
         address = open->address;
         break;
+    case DBP_ADDRESS_IPV6:
+        length = 16;
+        address = open->address;
+        break;
     case DBP_ADDRESS_DOMAIN:
         if (open->domain_length < 1 || open->domain_length > DBP_MAX_DOMAIN_LENGTH)
             return DBP_ERR_DOMAIN_LENGTH;
@@ -118,9 +126,10 @@ dbp_status_t dbp_decode_open_tcp(const uint8_t *in, size_t in_size,
     uint16_t port = read_u16(in + 1);
     uint8_t length = in[3];
 
-    if (type != DBP_ADDRESS_IPV4 && type != DBP_ADDRESS_DOMAIN) return DBP_ERR_ADDRESS_TYPE;
+    if (type != DBP_ADDRESS_IPV4 && type != DBP_ADDRESS_IPV6 && type != DBP_ADDRESS_DOMAIN) return DBP_ERR_ADDRESS_TYPE;
     if (port == 0) return DBP_ERR_PORT;
     if (type == DBP_ADDRESS_IPV4 && length != 4) return DBP_ERR_DOMAIN_LENGTH;
+    if (type == DBP_ADDRESS_IPV6 && length != 16) return DBP_ERR_DOMAIN_LENGTH;
     if (type == DBP_ADDRESS_DOMAIN && (length < 1 || length > DBP_MAX_DOMAIN_LENGTH))
         return DBP_ERR_DOMAIN_LENGTH;
     if (in_size != 4u + length) return DBP_ERR_TRUNCATED;
@@ -128,8 +137,8 @@ dbp_status_t dbp_decode_open_tcp(const uint8_t *in, size_t in_size,
     memset(open, 0, sizeof *open);
     open->address_type = type;
     open->port = port;
-    if (type == DBP_ADDRESS_IPV4) {
-        memcpy(open->address, in + 4, 4);
+    if (type == DBP_ADDRESS_IPV4 || type == DBP_ADDRESS_IPV6) {
+        memcpy(open->address, in + 4, length);
     } else {
         open->domain_length = length;
         memcpy(open->domain, in + 4, length);

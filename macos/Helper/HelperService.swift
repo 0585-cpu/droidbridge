@@ -251,7 +251,10 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
             tunnelActive: utun != nil || tunnelController != nil
                 || networkService.isPublished || pfController.isEnabled
                 || recoveryStore.hasPersistedState || recoveryAttentionRequired,
-            runtimeStatus: runtimeStatus
+            runtimeStatus: runtimeStatus,
+            activeUDP: tunnelController?.activeUDPCount ?? 0,
+            udpDrops: tunnelController?.udpDrops ?? 0,
+            capabilities: tunnelController?.capabilities
         )
         stateLock.unlock()
         reply((try? JSONEncoder.droidBridge.encode(snapshot)) ?? Data())

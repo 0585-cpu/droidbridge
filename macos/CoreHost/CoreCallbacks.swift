@@ -40,3 +40,28 @@ func db_bridge_rand(_ ctx: UnsafeMutableRawPointer?) -> UInt32 { arc4random() }
 func db_bridge_now(_ ctx: UnsafeMutableRawPointer?) -> UInt32 {
     UInt32(truncatingIfNeeded: UInt64(DispatchTime.now().uptimeNanoseconds / 1_000_000))
 }
+
+func db_bridge_open_ip(_ ctx: UnsafeMutableRawPointer?, _ flow: UInt32, _ family: UInt8, _ dst: UnsafePointer<UInt8>?, _ port: UInt16) {
+    guard let ctx, let dst, family == 4 || family == 6 else { return }
+    let bridge = Unmanaged<EngineBridge>.fromOpaque(ctx).takeUnretainedValue()
+    bridge.delegate?.engineOpenFlow(flow, dstIP: Array(UnsafeBufferPointer(start: dst, count: family == 4 ? 4 : 16)), port: port)
+}
+func db_bridge_open_udp(_ ctx: UnsafeMutableRawPointer?, _ flow: UInt32, _ family: UInt8, _ dst: UnsafePointer<UInt8>?, _ port: UInt16) {
+    guard let ctx, let dst, family == 4 || family == 6 else { return }
+    let bridge = Unmanaged<EngineBridge>.fromOpaque(ctx).takeUnretainedValue()
+    bridge.delegate?.engineOpenUDP(flow, dstIP: Array(UnsafeBufferPointer(start: dst, count: family == 4 ? 4 : 16)), port: port)
+}
+func db_bridge_send_udp(_ ctx: UnsafeMutableRawPointer?, _ flow: UInt32, _ data: UnsafePointer<UInt8>?, _ length: Int) {
+    guard let ctx, length == 0 || data != nil else { return }
+    let bridge = Unmanaged<EngineBridge>.fromOpaque(ctx).takeUnretainedValue()
+    bridge.delegate?.engineSendUDP(flow, length == 0 ? Data() : Data(bytes: data!, count: length))
+}
+func db_bridge_close_udp(_ ctx: UnsafeMutableRawPointer?, _ flow: UInt32, _ reason: db_close_reason_t) {
+    guard let ctx else { return }
+    Unmanaged<EngineBridge>.fromOpaque(ctx).takeUnretainedValue().delegate?.engineCloseUDP(flow)
+}
+func db_bridge_icmp(_ ctx: UnsafeMutableRawPointer?, _ request: UInt32, _ family: UInt8, _ dst: UnsafePointer<UInt8>?, _ ttl: UInt8, _ data: UnsafePointer<UInt8>?, _ length: Int) {
+    guard let ctx, let dst, family == 4 || family == 6, length == 0 || data != nil else { return }
+    let bridge = Unmanaged<EngineBridge>.fromOpaque(ctx).takeUnretainedValue()
+    bridge.delegate?.engineSendICMP(request, family: family, dstIP: Data(bytes: dst, count: family == 4 ? 4 : 16), ttl: ttl, payload: length == 0 ? Data() : Data(bytes: data!, count: length))
+}

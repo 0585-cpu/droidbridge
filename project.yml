@@ -67,14 +67,18 @@ targets:
       - path: macos/Helper/HelperRecoveryStateStore.swift
       - path: macos/Helper/NetworkServicePublisher.swift
       - path: macos/HostApp/Helper/ManualHelperInstaller.swift
-      - path: macos/CoreHost/EnginePollTimer.swift
+      - path: macos/CoreHost
       - path: macos/HostApp/Tunnel/TunnelStartupSequence.swift
     dependencies:
       - package: DroidBridgeShared
+      - target: DroidBridgeCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.droidbridge.helper-checks
         SWIFT_VERSION: "6.0"
+        SWIFT_INCLUDE_PATHS:
+          - $(SRCROOT)/core/include
+        OTHER_SWIFT_FLAGS: [-Xcc, -fmodule-map-file=$(SRCROOT)/core/include/module.modulemap]
   DroidBridgeHost:
     type: application
     platform: macOS

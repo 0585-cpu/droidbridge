@@ -266,6 +266,7 @@ private func testNetworkServicePublishWaitsForConfigd() throws {
         scutil(publish),
         scutil(TunnelNetworkService.primaryQuery, primaryIsEn0),
         scutil(TunnelNetworkService.primaryQuery, primaryIsUtun9),
+        scutil(TunnelNetworkService.primaryIPv6Query, primaryIsUtun9),
         scutil(TunnelNetworkService.removeScript),
     ])
     let service = NetworkServicePublisher(run: runner.run, attempts: 5, pollInterval: 0)
@@ -341,7 +342,9 @@ do {
     try testNetworkServicePublishWaitsForConfigd()
     try testNetworkServiceFailuresAreDetected()
     try testNetworkServiceWithdrawIsIdempotent()
-    print("helper checks: 10 passed, 0 failed")
+    runControllerSessionChecks()
+    runStoppedEngineCheck()
+    print("helper checks: 12 passed, 0 failed")
 } catch {
     FileHandle.standardError.write(Data("FAIL: \(error.localizedDescription)\n".utf8))
     exit(EXIT_FAILURE)

@@ -74,7 +74,7 @@ public actor NWConnectionTransport: RelayTransport {
                 connection.receive(minimumIncompleteLength: count, maximumLength: count) { data, _, _, error in
                     if let error { cont.resume(throwing: error) }
                     else if let data, data.count == count { cont.resume(returning: data) }
-                    else { cont.resume(throwing: DroidBridgeError.relayProtocol("peer closed")) }
+                    else { cont.resume(throwing: DroidBridgeError.relayProtocol(data?.isEmpty == false ? "truncated frame" : "peer closed")) }
                 }
             }
         } onCancel: {

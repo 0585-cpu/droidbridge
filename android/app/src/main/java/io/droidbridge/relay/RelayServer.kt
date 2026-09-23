@@ -1,6 +1,16 @@
 package io.droidbridge.relay
 
 import io.droidbridge.network.CellularUnavailableException
+import io.droidbridge.network.AddressFamilyUnavailableException
+import io.droidbridge.network.SocketPolicyException
+import io.droidbridge.protocol.*
+import java.io.Closeable
+import java.net.DatagramSocket
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import io.droidbridge.policy.DestinationDeniedException
 import io.droidbridge.protocol.DbpCodec
 import io.droidbridge.protocol.DbpErrorCode
@@ -40,6 +50,11 @@ interface RelayBackend {
     suspend fun resolveDns(queryPacket: ByteArray): ByteArray
     fun carrierName(): String?
     fun cellularReady(): Boolean
+    suspend fun connectUdp(destination: OpenDestination): DatagramSocket = throw UnsupportedOperationException("UDP unavailable")
+    suspend fun echo(request: IcmpRequest): IcmpReply = throw UnsupportedOperationException("ICMP unavailable")
+    fun capabilities(): RelayCapabilities = RelayCapabilities(flags=if(cellularReady()) Capability.TCP4 else 0)
+    fun release(socket: Closeable) {}
+    fun trafficPolicy(): RelayTrafficPolicy = RelayTrafficPolicy()
 }
 
 /**
@@ -51,15 +66,20 @@ class RelayServer(
     private val backend: RelayBackend,
     private val maximumFlows: Int = 128,
     private val bridge: StreamBridge = StreamBridge(),
+    private val maximumUdpFlows: Int = 256,
 ) {
-    init { require(maximumFlows in 1..256) }
+    init { require(maximumFlows in 1..256); require(maximumUdpFlows in 1..256) }
 
     val metrics = RelayMetrics(maximumFlows, backend::carrierName)
 
-    private val connectionSlots = Semaphore(256) // caps unauthenticated sockets too
+    private val connectionSlots = Semaphore(576) // combined 512 data flows + 64 bounded control/auth connections
     private val flowSlots = Semaphore(maximumFlows)
+    private val udpSlots = Semaphore(maximumUdpFlows)
+    private val epoch = AtomicLong()
+    private val nextUdpId = AtomicInteger(1)
+    private val allClients = ConcurrentHashMap.newKeySet<Socket>()
     private val activeFlowSockets = ConcurrentHashMap.newKeySet<Socket>()
-    private var serverSocket: ServerSocket? = null
+    @Volatile private var serverSocket: ServerSocket? = null
     private var scope: CoroutineScope? = null
 
     val port: Int get() = serverSocket?.localPort ?: -1
@@ -82,13 +102,17 @@ class RelayServer(
                     break // server closed
                 }
                 if (!client.inetAddress.isLoopbackAddress) { client.close(); continue }
-                serverScope.launch { handleConnection(client) }
+                synchronized(this@RelayServer) {
+                    if(serverSocket !== socket) { client.close() }
+                    else { allClients += client; serverScope.launch { handleConnection(client) } }
+                }
             }
         }
     }
 
-    fun stop() {
+    @Synchronized fun stop() {
         cancelActiveFlows()
+        allClients.clear()
         scope?.cancel()
         runCatching { serverSocket?.close() }
         serverSocket = null
@@ -97,13 +121,16 @@ class RelayServer(
 
     /** Immediately tears down established bridges while leaving the authenticated listener available. */
     fun cancelActiveFlows() {
+        epoch.incrementAndGet()
+        allClients.toList().forEach { runCatching { it.close() } }
         activeFlowSockets.toList().forEach { socket -> runCatching { socket.close() } }
     }
 
     private suspend fun handleConnection(client: Socket) {
-        if (!connectionSlots.tryAcquire()) { client.close(); return }
+        if (!connectionSlots.tryAcquire()) { allClients -= client; client.close(); return }
         try {
             client.tcpNoDelay = true
+            client.soTimeout = AUTH_TIMEOUT_MS.toInt()
             val input = DataInputStream(client.getInputStream())
             val output = client.getOutputStream()
             val session = authenticateHello(input, output) ?: return
@@ -114,6 +141,7 @@ class RelayServer(
         } catch (e: IOException) {
         } catch (e: TimeoutCancellationException) {
         } finally {
+            allClients -= client
             connectionSlots.release()
             runCatching { client.close() }
         }
@@ -130,6 +158,23 @@ class RelayServer(
         val (header, payload) = withTimeout(AUTH_TIMEOUT_MS) { readMessage(input) }
         session.verifyFollowup(header, payload)
         when (header.type) {
+            DbpMessageType.CAPABILITIES -> {
+                val caps=backend.capabilities().copy(activeUdp=metrics.activeUdp(),udpDrops=metrics.udpDrops())
+                writeFrame(output,session.sign(DbpMessageType.CAPABILITIES_RESPONSE,ExtensionCodec.encodeCapabilities(caps)))
+            }
+            DbpMessageType.OPEN_UDP -> openUdp(client,output,session,ExtensionCodec.decodeUdpOpen(payload))
+            DbpMessageType.ICMP_ECHO -> {
+                val request=ExtensionCodec.decodeIcmpRequest(payload)
+                try {
+                    val response=backend.echo(request)
+                    metrics.addTransfer(request.payload.size.toLong(),response.payload.size.toLong())
+                    writeFrame(output,session.sign(DbpMessageType.ICMP_ECHO_RESPONSE,ExtensionCodec.encodeIcmpReply(response)))
+                } catch(e: CancellationException) { throw e }
+                catch(e: Exception) {
+                    metrics.recordError(e)
+                    writeFrame(output,session.sign(DbpMessageType.ICMP_ECHO_ERROR,ExtensionCodec.encodeIcmpError(request.requestId,errorCode(e))))
+                }
+            }
             DbpMessageType.HEALTH -> {
                 val status = if (backend.cellularReady()) HealthStatus.READY else HealthStatus.CELLULAR_UNAVAILABLE
                 writeFrame(output, session.sign(DbpMessageType.HEALTH_RESPONSE, metrics.healthPayload(status)))
@@ -138,59 +183,76 @@ class RelayServer(
                 val dns = payload.copyOfRange(2, payload.size)
                 val response = try {
                     backend.resolveDns(dns)
-                } catch (e: Exception) {
+                } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                    metrics.recordError(e)
                     writeFrame(output, session.sign(DbpMessageType.OPEN_ERROR, DbpCodec.encodeError(DbpErrorCode.DNS_FAILED)))
                     return
                 }
-                writeFrame(output, session.sign(DbpMessageType.DNS_RESPONSE, DbpCodec.encodeDns(response)))
+                metrics.addTransfer(dns.size.toLong(),response.size.toLong())
+                backend.trafficPolicy().writeDownload(output, session.sign(DbpMessageType.DNS_RESPONSE, DbpCodec.encodeDns(response)))
             }
             DbpMessageType.OPEN_TCP -> openTcp(client, output, session, DbpCodec.decodeOpenTcp(payload))
             else -> throw DbpProtocolException("unexpected request ${header.type}")
         }
     }
 
+    private fun errorCode(error: Exception): DbpErrorCode = when(error) {
+        is DestinationDeniedException -> DbpErrorCode.POLICY_DENIED
+        is AddressFamilyUnavailableException -> DbpErrorCode.ADDRESS_FAMILY_UNAVAILABLE
+        is CellularUnavailableException -> DbpErrorCode.CELLULAR_UNAVAILABLE
+        is UnsupportedOperationException -> DbpErrorCode.UDP_UNSUPPORTED
+        is SocketPolicyException -> DbpErrorCode.POLICY_DENIED
+        is java.net.SocketTimeoutException -> DbpErrorCode.CONNECT_TIMEOUT
+        is IOException -> DbpErrorCode.CONNECT_REFUSED
+        else -> DbpErrorCode.INTERNAL_ERROR
+    }
+
     private suspend fun openTcp(client: Socket, output: OutputStream, session: AuthenticatedSession, destination: OpenDestination) {
-        if (!backend.cellularReady()) {
-            writeFrame(output, session.sign(DbpMessageType.OPEN_ERROR, DbpCodec.encodeError(DbpErrorCode.CELLULAR_UNAVAILABLE)))
-            return
-        }
-        if (!flowSlots.tryAcquire()) {
-            writeFrame(output, session.sign(DbpMessageType.OPEN_ERROR, DbpCodec.encodeError(DbpErrorCode.SESSION_LIMIT)))
-            return
-        }
-        val remote = try {
-            backend.connect(destination)
-        } catch (e: DestinationDeniedException) {
-            flowSlots.release()
-            writeFrame(output, session.sign(DbpMessageType.OPEN_ERROR, DbpCodec.encodeError(DbpErrorCode.POLICY_DENIED)))
-            return
-        } catch (e: CellularUnavailableException) {
-            flowSlots.release()
-            writeFrame(output, session.sign(DbpMessageType.OPEN_ERROR, DbpCodec.encodeError(DbpErrorCode.CONNECT_REFUSED)))
-            return
-        } catch (e: IOException) {
-            flowSlots.release()
-            writeFrame(output, session.sign(DbpMessageType.OPEN_ERROR, DbpCodec.encodeError(DbpErrorCode.CONNECT_TIMEOUT)))
-            return
-        }
-        activeFlowSockets += client
-        activeFlowSockets += remote
-        var opened = false
+        if(!backend.cellularReady()) { writeFrame(output,session.sign(DbpMessageType.OPEN_ERROR,DbpCodec.encodeError(DbpErrorCode.CELLULAR_UNAVAILABLE))); return }
+        if(!flowSlots.tryAcquire()) { writeFrame(output,session.sign(DbpMessageType.OPEN_ERROR,DbpCodec.encodeError(DbpErrorCode.SESSION_LIMIT))); return }
+        val startEpoch=epoch.get()
+        var remote: Socket?=null
+        var opened=false
         try {
-            writeFrame(output, session.sign(DbpMessageType.OPEN_OK, ByteArray(0)))
-            metrics.flowOpened()
-            opened = true
-            // after OPEN_OK the client socket is a raw byte stream
-            val clientEnd = BridgeEnd("client", client.getInputStream(), output, { runCatching { client.shutdownOutput() } })
-            val remoteEnd = BridgeEnd("remote", remote.getInputStream(), remote.getOutputStream(), { runCatching { remote.shutdownOutput() } })
-            val (up, down) = bridge.copyBidirectional(clientEnd, remoteEnd)
-            metrics.addTransfer(up, down)
+            val connected=try { backend.connect(destination) } catch(e: CancellationException) { throw e }
+            catch(e: Exception) { metrics.recordError(e); writeFrame(output,session.sign(DbpMessageType.OPEN_ERROR,DbpCodec.encodeError(errorCode(e)))); return }
+            remote=connected
+            currentCoroutineContext().ensureActive()
+            if(startEpoch!=epoch.get() || client.isClosed) return
+            activeFlowSockets+=connected
+            client.soTimeout=0
+            writeFrame(output,session.sign(DbpMessageType.OPEN_OK,ByteArray(0)))
+            metrics.flowOpened(); opened=true
+            val a=BridgeEnd("client",client.getInputStream(),output,{ runCatching { client.shutdownOutput() } })
+            val b=BridgeEnd("remote",connected.getInputStream(),connected.getOutputStream(),{ runCatching { connected.shutdownOutput() } })
+            bridge.copyBidirectional(a,b,backend.trafficPolicy(),metrics::addTransfer)
         } finally {
-            activeFlowSockets -= client
-            activeFlowSockets -= remote
-            if (opened) metrics.flowClosed()
+            remote?.let { activeFlowSockets-=it; runCatching { it.close() }; backend.release(it) }
+            if(opened) metrics.flowClosed()
             flowSlots.release()
-            runCatching { remote.close() }
+        }
+    }
+
+    private suspend fun openUdp(client: Socket,output: OutputStream,session: AuthenticatedSession,request: UdpOpen) {
+        if(!backend.cellularReady()) { writeFrame(output,session.sign(DbpMessageType.OPEN_UDP_ERROR,ExtensionCodec.encodeUdpError(DbpErrorCode.CELLULAR_UNAVAILABLE))); return }
+        if(!udpSlots.tryAcquire()) { writeFrame(output,session.sign(DbpMessageType.OPEN_UDP_ERROR,ExtensionCodec.encodeUdpError(DbpErrorCode.SESSION_LIMIT))); return }
+        val startEpoch=epoch.get()
+        var remote: DatagramSocket?=null
+        var opened=false
+        try {
+            val connected=try { backend.connectUdp(request.destination) } catch(e: CancellationException) { throw e }
+            catch(e: Exception) { metrics.recordError(e); writeFrame(output,session.sign(DbpMessageType.OPEN_UDP_ERROR,ExtensionCodec.encodeUdpError(errorCode(e)))); return }
+            remote=connected
+            currentCoroutineContext().ensureActive()
+            if(startEpoch!=epoch.get() || client.isClosed) return
+            client.soTimeout=0
+            writeFrame(output,session.sign(DbpMessageType.OPEN_UDP_OK,ExtensionCodec.encodeUdpOk(nextUdpId.getAndIncrement(),request.idleSeconds)))
+            metrics.udpOpened(); opened=true
+            UdpRelaySession(client,connected,request.idleSeconds,backend.trafficPolicy(),metrics::addUdpDrops,metrics::addTransfer).run()
+        } finally {
+            remote?.let { it.close(); backend.release(it) }
+            if(opened) metrics.udpClosed()
+            udpSlots.release()
         }
     }
 

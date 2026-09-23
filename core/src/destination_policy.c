@@ -40,3 +40,53 @@ db_policy_result_t db_policy_check_ipv4(const uint8_t address[4]) {
     }
     return DB_POLICY_ALLOW;
 }
+
+/* Only global unicast plus the standard translation prefix. Special-purpose
+ * 2001::/23, documentation, 6to4, ORCHID, ULA, mapped/compatible, link-local,
+ * multicast and discard ranges all fail closed. */
+db_policy_result_t db_policy_check_ipv6(const uint8_t a[16]) {
+    if (!a)
+        return DB_POLICY_DENY_RESERVED;
+    static const uint8_t well_known[12] = {0, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0};
+    int match = 1;
+    for (int i = 0; i < 12; i++)
+        if (a[i] != well_known[i])
+            match = 0;
+    if (match)
+        return db_policy_check_ipv4(a + 12);
+    if ((a[0] & 0xe0) != 0x20)
+        return DB_POLICY_DENY_RESERVED;
+    if (a[0] == 0x20 && a[1] == 1 && a[2] < 2)
+        return DB_POLICY_DENY_RESERVED;
+    if (a[0] == 0x20 && a[1] == 1 && a[2] == 0x0d && a[3] == 0xb8)
+        return DB_POLICY_DENY_DOCUMENTATION;
+    if (a[0] == 0x3f && a[1] == 0xff && (a[2] & 0xf0) == 0)
+        return DB_POLICY_DENY_DOCUMENTATION;
+    if (a[0] == 0x20 && a[1] == 2)
+        return DB_POLICY_DENY_RESERVED; /* 6to4 embedded IPv4 */
+    return DB_POLICY_ALLOW;
+}
+db_policy_result_t db_policy_check_ipv6_nat64(const uint8_t a[16], const uint8_t prefix[16], uint8_t bits) {
+    if (!a)
+        return DB_POLICY_DENY_RESERVED;
+    if (!bits)
+        return db_policy_check_ipv6(a);
+    if (!prefix || !(bits == 32 || bits == 40 || bits == 48 || bits == 56 || bits == 64 || bits == 96))
+        return DB_POLICY_DENY_RESERVED;
+    for (unsigned i = 0; i < bits / 8; i++)
+        if (a[i] != prefix[i])
+            return db_policy_check_ipv6(a);
+    uint8_t ip[4];
+    unsigned at = bits / 8;
+    for (unsigned i = 0; i < 4; i++) {
+        if (at == 8)
+            at++;
+        ip[i] = a[at++];
+    }
+    if (bits != 96 && a[8])
+        return DB_POLICY_DENY_RESERVED; /* RFC 6052 reserved u octet */
+    for (; at < 16; at++)
+        if (a[at])
+            return DB_POLICY_DENY_RESERVED;
+    return db_policy_check_ipv4(ip);
+}

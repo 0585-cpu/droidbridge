@@ -86,8 +86,7 @@ public struct RelayControlClient: Sendable {
         let remaining = try DbpCodec.payloadRemaining(header.type, prefix: [UInt8](prefix))
         let rest = remaining > 0 ? try await connection.receiveExactly(remaining) : Data()
         let payload = prefix + rest
-        let expected = DbpCodec.computeHMAC(secret: secret, header: header, payload: payload)
-        guard expected == hmac else { throw DroidBridgeError.relayAuthenticationFailed }
+        guard DbpCodec.verifyHMAC(secret: secret, header: header, payload: payload, hmac: hmac) else { throw DroidBridgeError.relayAuthenticationFailed }
         return (header, payload)
     }
 }

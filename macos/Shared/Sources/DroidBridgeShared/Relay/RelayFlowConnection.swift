@@ -27,6 +27,7 @@ public actor RelayFlowConnection {
     private let outbound: OutboundBuffer
     private var sending = false
     private var opened = false
+    private var closed = false
     private let now: @Sendable () -> UInt64
 
     /// Lock-protected bounded FIFO so the C engine's send callback can enqueue synchronously.
@@ -63,6 +64,7 @@ public actor RelayFlowConnection {
     public nonisolated var bufferedOutboundBytes: Int { outbound.count }
 
     public func start() async throws {
+        guard !closed else { throw CancellationError() }
         try await transport.start()
         // HELLO -> HELLO_OK
         try await sendControl(.hello, payload: Data())
@@ -72,9 +74,9 @@ public actor RelayFlowConnection {
         }
         serverNonce = helloOk.serverNonce
         // OPEN_TCP -> OPEN_OK | OPEN_ERROR
-        try await sendControl(.openTcp, payload: DbpCodec.encodeOpenTcp(
-            host: destination.host, port: destination.port))
+        try await sendControl(.openTcp, payload: DbpCodec.encodeOpenTcp(destination: destination))
         let (open, openPayload) = try await readControl()
+        guard !closed, open.clientNonce == clientNonce, open.serverNonce == serverNonce else { throw DroidBridgeError.relayAuthenticationFailed }
         switch open.type {
         case .openOk:
             opened = true
@@ -97,7 +99,7 @@ public actor RelayFlowConnection {
         return accepted
     }
 
-    public func close() async { await transport.cancel() }
+    public func close() async { closed = true; opened = false; _ = outbound.takeAll(); await transport.cancel() }
 
     // MARK: - internals
 
@@ -114,14 +116,14 @@ public actor RelayFlowConnection {
         let remaining = try DbpCodec.payloadRemaining(header.type, prefix: [UInt8](prefix))
         let rest = remaining > 0 ? try await transport.receiveExactly(remaining) : Data()
         let payload = prefix + rest
-        guard DbpCodec.computeHMAC(secret: secret, header: header, payload: payload) == hmac else {
+        guard DbpCodec.verifyHMAC(secret: secret, header: header, payload: payload, hmac: hmac) else {
             throw DroidBridgeError.relayAuthenticationFailed
         }
         return (header, payload)
     }
 
     private func pumpSend() {
-        guard opened, !sending, !outbound.isEmpty else { return }
+        guard opened, !closed, !sending, !outbound.isEmpty else { return }
         sending = true
         let chunk = outbound.takeAll()
         Task {
@@ -140,16 +142,18 @@ public actor RelayFlowConnection {
         if !outbound.isEmpty { pumpSend() }
     }
 
-    private func failClosed() {
+    private func failClosed() async {
+        guard !closed else { return }; await close()
         delegate?.relayFlowClosed(flowId, isError: true)
     }
 
     private func receiveLoop() async {
-        while true {
+        while !closed {
             let data: Data
             do { data = try await transport.receive(maxLength: Self.receiveChunk) }
-            catch { delegate?.relayFlowClosed(flowId, isError: true); return }
-            if data.isEmpty { delegate?.relayFlowClosed(flowId, isError: false); return } // clean EOF
+            catch { await failClosed(); return }
+            if data.isEmpty { guard !closed else { return }; await close(); delegate?.relayFlowClosed(flowId, isError: false); return } // clean EOF
+            guard !closed else { return }
             delegate?.relayFlowReceived(flowId, data: data)
         }
     }

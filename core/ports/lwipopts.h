@@ -1,4 +1,6 @@
-/* lwIP options for the DroidBridge B1 data plane: NO_SYS raw API, IPv4/TCP only. */
+/* lwIP's internal TCP state machine uses IPv4 envelopes. The packet engine
+ * validates and restores IPv6 envelopes while preserving TCP stream semantics;
+ * no lwIP IPv6 routing, neighbor discovery, or UDP sockets are exposed. */
 #ifndef DROIDBRIDGE_LWIPOPTS_H
 #define DROIDBRIDGE_LWIPOPTS_H
 

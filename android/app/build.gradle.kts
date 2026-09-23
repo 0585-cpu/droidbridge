@@ -6,6 +6,8 @@ plugins {
 android {
     namespace = "io.droidbridge"
     compileSdk = 36
+    ndkVersion = "27.1.12297006"
+    externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
 
     defaultConfig {
         applicationId = "io.droidbridge.android"
@@ -33,6 +35,9 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        // JDK17's NIO adaptor on macOS drops connected empty datagrams; use the plain
+        // implementation for real loopback tests, matching Android's socket semantics.
+        unitTests.all { it.jvmArgs("-Djdk.net.usePlainDatagramSocketImpl=true"); it.systemProperty("droidbridge.protocolVectors", rootProject.file("../protocol/test-vectors").absolutePath) }
     }
 }
 

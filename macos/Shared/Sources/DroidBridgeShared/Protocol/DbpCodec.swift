@@ -5,12 +5,15 @@ public enum DbpMessageType: UInt8, Sendable {
     case hello = 0x01, helloOk = 0x02
     case openTcp = 0x10, openOk = 0x11, openError = 0x12
     case dnsQuery = 0x20, dnsResponse = 0x21
-    case health = 0x30, healthResponse = 0x31
+    case health = 0x30, healthResponse = 0x31, capabilities = 0x32, capabilitiesResponse = 0x33
+    case openUDP = 0x40, openUDPOk = 0x41, openUDPError = 0x42, udpClose = 0x43
+    case icmpEcho = 0x60, icmpResponse = 0x61, icmpError = 0x62
 }
 
 public enum DbpErrorCode: UInt8, Sendable {
     case authFailed = 1, versionUnsupported = 2, policyDenied = 3, cellularUnavailable = 4
     case dnsFailed = 5, connectTimeout = 6, connectRefused = 7, sessionLimit = 8, internalError = 9
+    case udpUnsupported = 10, datagramTooLarge = 11, udpIdleTimeout = 12, udpQueueOverflow = 13, addressFamilyUnavailable = 14
 }
 
 public enum DbpHealthStatus: UInt8, Sendable { case notReady = 0, ready = 1, cellularUnavailable = 2 }
@@ -48,7 +51,6 @@ public enum DbpCodec {
         let b = Data(bytes) // ensure zero-based indexing
         guard b.count >= headerSize else { throw DroidBridgeError.relayProtocol("truncated header") }
         guard b.prefix(4) == magic else { throw DroidBridgeError.relayProtocol("bad magic") }
-        guard b[4 + b.startIndex] != nil else { throw DroidBridgeError.relayProtocol("type") }
         let arr = [UInt8](b.prefix(headerSize))
         guard let type = DbpMessageType(rawValue: arr[4]) else { throw DroidBridgeError.relayProtocol("message type") }
         guard arr[5] == 0 else { throw DroidBridgeError.relayProtocol("flags") }
@@ -67,6 +69,10 @@ public enum DbpCodec {
         return Data(mac)
     }
 
+    public static func verifyHMAC(secret: Data, header: DbpHeader, payload: Data, hmac: Data) -> Bool {
+        HMAC<SHA256>.isValidAuthenticationCode(hmac, authenticating: encodeHeader(header, hmac: Data(count: hmacSize)) + payload, using: SymmetricKey(data: secret))
+    }
+
     public static func frame(secret: Data, header: DbpHeader, payload: Data = Data()) -> Data {
         encodeHeader(header, hmac: computeHMAC(secret: secret, header: header, payload: payload)) + payload
     }
@@ -74,16 +80,35 @@ public enum DbpCodec {
     /// Payload prefix length before the total payload size is known (mirrors Kotlin DbpCodec).
     public static func payloadPrefixLength(_ type: DbpMessageType) -> Int {
         switch type {
-        case .hello, .helloOk, .openOk, .health: return 0
+        case .hello, .helloOk, .openOk, .health, .capabilities, .udpClose: return 0
         case .openError: return 1
-        case .openTcp: return 4
-        case .dnsQuery, .dnsResponse: return 2
+        case .openTcp, .openUDP: return 4
+        case .openUDPOk: return 8
+        case .openUDPError: return 4
+        case .icmpEcho: return 24
+        case .icmpResponse: return 32
+        case .icmpError: return 6
+        case .dnsQuery, .dnsResponse, .capabilitiesResponse: return 2
         case .healthResponse: return 22
         }
     }
 
     public static func payloadRemaining(_ type: DbpMessageType, prefix: [UInt8]) throws -> Int {
+        guard prefix.count == payloadPrefixLength(type) else { throw DroidBridgeError.relayProtocol("payload prefix") }
         switch type {
+        case .openTcp, .openUDP:
+            let length = Int(prefix[3])
+            guard (prefix[0] == 1 && length == 4) || (prefix[0] == 2 && length == 16) || (type == .openTcp && prefix[0] == 3 && (1...253).contains(length)) else { throw DroidBridgeError.relayProtocol("address") }
+            return length + (type == .openUDP ? 2 : 0)
+        case .capabilitiesResponse:
+            let length = Int(prefix[0]) << 8 | Int(prefix[1])
+            guard (1...256).contains(length) else { throw DroidBridgeError.relayProtocol("capability length") }
+            return length
+        case .icmpEcho, .icmpResponse:
+            let offset = type == .icmpEcho ? 2 : 6
+            let length = Int(prefix[offset]) << 8 | Int(prefix[offset + 1])
+            guard length <= 1200 else { throw DroidBridgeError.relayProtocol("icmp length") }
+            return length
         case .healthResponse:
             guard prefix.count == 22 else { throw DroidBridgeError.relayProtocol("health prefix") }
             let nameLen = Int(prefix[21])
@@ -116,7 +141,7 @@ public enum DbpCodec {
         let uploaded = readU64(payload, 5)
         let downloaded = readU64(payload, 13)
         let nameLen = Int(payload[21])
-        guard maximum <= 256, active <= maximum, nameLen <= 63, payload.count == 22 + nameLen else {
+        guard maximum <= 512, active <= maximum, nameLen <= 63, payload.count == 22 + nameLen else {
             throw DroidBridgeError.relayProtocol("health bounds")
         }
         guard let carrier = String(bytes: payload[22..<(22 + nameLen)], encoding: .utf8) else {
