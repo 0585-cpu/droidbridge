@@ -23,6 +23,7 @@ interface ConnectivityFacade {
     fun dnsServers(network: NetworkHandle): List<InetAddress>
     fun releaseSocket(socket: java.io.Closeable) {}
     fun createDatagramSocket(network: NetworkHandle): DatagramSocket = throw java.io.IOException("UDP unsupported")
+    fun supportsUdpAssociation(network: NetworkHandle): Boolean = false
     fun supportsIpv6(network: NetworkHandle): Boolean = false
     fun nat64Prefix(network: NetworkHandle): ByteArray? = null
     fun applyPolicy(socket: Socket, address: InetAddress, policy: SocketEgressPolicy) {

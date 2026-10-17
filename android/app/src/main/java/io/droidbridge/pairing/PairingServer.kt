@@ -9,7 +9,23 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.ensureActive
+
+private val pairingIo = Dispatchers.IO.limitedParallelism(4)
+
+/** Socket IO ignores thread interruption on some Android versions. Cancellation owns close. */
+private suspend fun <T> cancellablePairingIo(close: () -> Unit, abandoned: (T) -> Unit = {}, block: () -> T): T =
+    suspendCancellableCoroutine { continuation ->
+        continuation.invokeOnCancellation { runCatching(close) }
+        pairingIo.dispatch(continuation.context, Runnable {
+            try {
+                continuation.context.ensureActive()
+                val value = block()
+                continuation.resume(value) { _, result, _ -> abandoned(result) }
+            } catch (error: Exception) { continuation.resumeWith(Result.failure(error)) }
+        })
+    }
 
 /** One pairing conversation. Frames are raw JSON bytes; length framing is the channel's job. */
 interface PairingChannel {
@@ -39,13 +55,13 @@ class SocketPairingChannel(private val socket: Socket) : PairingChannel {
     private val input = DataInputStream(socket.getInputStream())
     private val output = DataOutputStream(socket.getOutputStream())
 
-    override suspend fun readFrame(): ByteArray = withContext(Dispatchers.IO) {
+    override suspend fun readFrame(): ByteArray = cancellablePairingIo(::close) {
         val length = try { input.readInt() } catch (e: EOFException) { throw PairingException("peer closed") }
         if (length <= 0 || length > PairingFrames.MAX_FRAME) throw PairingException("frame size")
         ByteArray(length).also { input.readFully(it) }
     }
 
-    override suspend fun writeFrame(frame: ByteArray) = withContext(Dispatchers.IO) {
+    override suspend fun writeFrame(frame: ByteArray) = cancellablePairingIo(::close) {
         output.writeInt(frame.size)
         output.write(frame)
         output.flush()
@@ -58,12 +74,13 @@ class SocketPairingChannel(private val socket: Socket) : PairingChannel {
 
 /** Loopback-only pairing listener. Accepts exactly one connection per [acceptOne] call. */
 class PairingServer(private val port: Int = DEFAULT_PORT) {
-    private var serverSocket: ServerSocket? = null
+    @Volatile private var serverSocket: ServerSocket? = null
 
     val boundPort: Int get() = serverSocket?.localPort ?: -1
     val boundAddress: InetAddress? get() = serverSocket?.inetAddress
 
-    fun open() {
+    @Synchronized fun open() {
+        check(serverSocket == null) { "pairing server already open" }
         val socket = ServerSocket()
         try {
             socket.reuseAddress = true
@@ -75,18 +92,19 @@ class PairingServer(private val port: Int = DEFAULT_PORT) {
         }
     }
 
-    suspend fun acceptOne(): PairingChannel = withContext(Dispatchers.IO) {
+    suspend fun acceptOne(): PairingChannel {
         val server = serverSocket ?: throw PairingException("not open")
-        val socket = server.accept()
-        if (!socket.inetAddress.isLoopbackAddress) {
-            socket.close()
-            throw PairingException("non-loopback peer")
+        return cancellablePairingIo(close = { server.close() }, abandoned = { it.close() }) {
+            val socket = server.accept()
+            try {
+                if (!socket.inetAddress.isLoopbackAddress) throw PairingException("non-loopback peer")
+                socket.soTimeout = READ_TIMEOUT_MS
+                SocketPairingChannel(socket)
+            } catch (error: Exception) { socket.close(); throw error }
         }
-        socket.soTimeout = READ_TIMEOUT_MS
-        SocketPairingChannel(socket)
     }
 
-    fun close() {
+    @Synchronized fun close() {
         try { serverSocket?.close() } catch (e: IOException) { /* ignore */ }
         serverSocket = null
     }

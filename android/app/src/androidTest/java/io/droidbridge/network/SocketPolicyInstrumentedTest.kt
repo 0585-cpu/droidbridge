@@ -30,7 +30,7 @@ class SocketPolicyInstrumentedTest {
         val loopback=Inet6Address.getByAddress(null,ByteArray(16).also {it[15]=1},-1)
         DatagramSocket(InetSocketAddress(loopback,0)).use { receiver ->
             receiver.soTimeout=2000
-            DatagramSocket(InetSocketAddress(loopback,0)).use { sender ->
+            AndroidDatagramSocket().apply { bind(InetSocketAddress(loopback,0)) }.use { sender ->
                 for(hop in listOf(1,64,65,255)) AndroidSocketPolicyApplier.apply(sender,loopback,SocketEgressPolicy(ipv6HopLimit=hop))
                 sender.connect(receiver.localSocketAddress)
                 sender.send(DatagramPacket(ByteArray(0),0))

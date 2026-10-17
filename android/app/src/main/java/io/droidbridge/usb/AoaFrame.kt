@@ -10,14 +10,14 @@ data class AoaFrame(val type: Int, val streamId: Int, val service: Int = 0, val 
     fun encode(): ByteArray {
         validate(type, streamId, service, payload.size)
         validateCredit()
-        return ByteBuffer.allocate(16 + payload.size).putInt(MAGIC).put(1).put(type.toByte())
+        return ByteBuffer.allocate(16 + payload.size).putInt(MAGIC).put(2).put(type.toByte())
             .put(service.toByte()).put(0).putInt(streamId).putInt(payload.size).put(payload).array()
     }
 
-    fun credit(): Int = ByteBuffer.wrap(payload).int
+    fun credit(): Long = ByteBuffer.wrap(payload).long
 
     private fun validateCredit() {
-        if (type == WINDOW && credit() !in 1..INITIAL_CREDIT) throw IOException("invalid AOA credit")
+        if (type == WINDOW && credit() < 0) throw IOException("invalid AOA consumed count")
     }
 
     companion object {
@@ -34,10 +34,23 @@ data class AoaFrame(val type: Int, val streamId: Int, val service: Int = 0, val 
         const val RELAY = 1
         const val PAIRING = 2
         const val MAX_PAYLOAD = 16384
+        // Sender budget: one 16 KiB descriptor write includes both envelope headers.
+        // Keep MAX_PAYLOAD for receiving frames from existing peers.
+        const val SEND_PAYLOAD = 16384 - 16 - 80
+        // Frames the writer may pack into one reliable record (one 16 KiB descriptor write).
+        const val WRITE_BUDGET = 16384 - 80
         const val INITIAL_CREDIT = 65536
         private const val MAGIC = 0x4442414d
 
-        fun window(id: Int, bytes: Int) = AoaFrame(WINDOW, id, payload = ByteBuffer.allocate(4).putInt(bytes).array())
+        /** DATA straight from a caller's buffer: one allocation and one copy per frame. */
+        fun encodeData(streamId: Int, source: ByteArray, offset: Int, length: Int): ByteArray {
+            validate(DATA, streamId, 0, length)
+            return ByteBuffer.allocate(16 + length).putInt(MAGIC).put(2).put(DATA.toByte()).put(0).put(0)
+                .putInt(streamId).putInt(length).put(source, offset, length).array()
+        }
+
+        // Version 2 WINDOW is a cumulative count, so repeating it cannot inflate credit.
+        fun window(id: Int, bytes: Long) = AoaFrame(WINDOW, id, payload = ByteBuffer.allocate(8).putLong(bytes).array())
 
         private fun validate(type: Int, id: Int, service: Int, length: Int) {
             if (type in RESET..PONG) {
@@ -51,21 +64,21 @@ data class AoaFrame(val type: Int, val streamId: Int, val service: Int = 0, val 
                 throw IOException("invalid AOA service")
             when (type) {
                 DATA -> if (length == 0) throw IOException("empty AOA DATA")
-                WINDOW -> if (length != 4) throw IOException("invalid AOA window length")
+                WINDOW -> if (length != 8) throw IOException("invalid AOA window length")
                 else -> if (length != 0) throw IOException("invalid AOA control payload")
             }
         }
 
         /** null means clean EOF between frames; a partial frame always throws. */
         fun read(input: InputStream): AoaFrame? {
-            val first = input.read()
-            if (first == -1) return null
             val header = ByteArray(16)
-            header[0] = first.toByte()
+            val count = input.read(header, 0, header.size)
+            if (count == -1) return null
             val source = DataInputStream(input)
-            source.readFully(header, 1, 15)
+            source.readFully(header, count, header.size - count)
             val buffer = ByteBuffer.wrap(header)
-            if (buffer.int != MAGIC || buffer.get().toInt() != 1) throw IOException("invalid AOA version")
+            if (buffer.int != MAGIC) throw IOException("invalid AOA magic")
+            if (buffer.get().toInt() != 2) throw IOException("AOA version mismatch; update both DroidBridge apps")
             val type = buffer.get().toInt() and 255
             val service = buffer.get().toInt() and 255
             if (buffer.get().toInt() != 0) throw IOException("invalid AOA reserved byte")

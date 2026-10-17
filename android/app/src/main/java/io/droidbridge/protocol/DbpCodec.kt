@@ -57,7 +57,7 @@ object DbpCodec {
         DbpMessageType.OPEN_ERROR -> 1
         DbpMessageType.OPEN_TCP, DbpMessageType.OPEN_UDP -> 4
         DbpMessageType.OPEN_UDP_OK -> 8
-        DbpMessageType.OPEN_UDP_ERROR -> 4
+        DbpMessageType.OPEN_UDP_ERROR, DbpMessageType.OPEN_UDP_ASSOCIATION -> 4
         DbpMessageType.CAPABILITIES_RESPONSE -> 2
         DbpMessageType.ICMP_ECHO -> 24
         DbpMessageType.ICMP_ECHO_RESPONSE -> 32
@@ -124,6 +124,7 @@ object DbpCodec {
             DbpMessageType.HEALTH_RESPONSE -> decodeHealth(payload)
             DbpMessageType.CAPABILITIES_RESPONSE -> ExtensionCodec.decodeCapabilities(payload)
             DbpMessageType.OPEN_UDP -> ExtensionCodec.decodeUdpOpen(payload)
+            DbpMessageType.OPEN_UDP_ASSOCIATION -> ExtensionCodec.decodeUdpAssociationOpen(payload)
             DbpMessageType.ICMP_ECHO -> ExtensionCodec.decodeIcmpRequest(payload)
             else -> DbpPayload.Extension(payload)
         }

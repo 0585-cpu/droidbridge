@@ -14,10 +14,13 @@ import androidx.core.content.ContextCompat
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
+import android.util.Log
 import io.droidbridge.R
 import io.droidbridge.state.RelayStatus
 import io.droidbridge.usb.UsbAccessorySession
 import io.droidbridge.usb.UsbAccessoryStatus
+import io.droidbridge.usb.UsbAccessoryAvailability
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
@@ -32,12 +35,26 @@ class RelayForegroundService : Service() {
     private lateinit var controller: RelayServiceController
     private var notificationUpdates: Job? = null
     private lateinit var usb: UsbAccessorySession
+    private var usbRequested = false
     private val detached = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == UsbManager.ACTION_USB_ACCESSORY_DETACHED) {
                 @Suppress("DEPRECATION")
                 val accessory = intent.getParcelableExtra<UsbAccessory>(UsbManager.EXTRA_ACCESSORY)
                 accessory?.let(usb::detached)
+            } else if (intent.action == UsbAccessoryAvailability.ACTION_USB_STATE) {
+                usb.usbStateChanged()
+                // Continue the user's existing USB request after re-enumeration, only with
+                // the actual current permission and mode. Never request a new grant here.
+                if (usbRequested && UsbAccessoryAvailability.read(context).canOpen) {
+                    val manager = getSystemService(UsbManager::class.java)
+                    manager.accessoryList?.firstOrNull { UsbAccessoryStatus.matches(it) && manager.hasPermission(it) }
+                        ?.let { accessory ->
+                            runCatching { usb.connect(accessory) }.onFailure {
+                                Log.w("DroidBridgeUSB", "USB mode changed during reconnect", it)
+                            }
+                        }
+                }
             }
         }
     }
@@ -45,8 +62,10 @@ class RelayForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         controller = RelayServiceController.shared(applicationContext)
-        usb = UsbAccessorySession(getSystemService(UsbManager::class.java))
-        ContextCompat.registerReceiver(this, detached, IntentFilter(UsbManager.ACTION_USB_ACCESSORY_DETACHED), ContextCompat.RECEIVER_NOT_EXPORTED)
+        usb = UsbAccessorySession(applicationContext, relayAcceptor = controller::acceptRelay)
+        ContextCompat.registerReceiver(this, detached, IntentFilter(UsbManager.ACTION_USB_ACCESSORY_DETACHED).apply {
+            addAction(UsbAccessoryAvailability.ACTION_USB_STATE)
+        }, ContextCompat.RECEIVER_NOT_EXPORTED)
         createChannel()
     }
 
@@ -57,12 +76,14 @@ class RelayForegroundService : Service() {
                 try {
                     controller.start()
                     if (intent.action == ACTION_CONNECT_USB) {
+                        usbRequested = true
                         @Suppress("DEPRECATION")
                         val accessory = intent.getParcelableExtra<UsbAccessory>(UsbManager.EXTRA_ACCESSORY)
                             ?: error("USB accessory is missing")
                         usb.connect(accessory)
                     }
                 } catch (error: Exception) {
+                    Log.e("DroidBridgeUSB", "Cannot start relay or USB session", error)
                     UsbAccessoryStatus.mutable.value = error.message ?: "Cannot start USB relay"
                     usb.close()
                     controller.stop()
@@ -79,6 +100,7 @@ class RelayForegroundService : Service() {
                 }
             }
             ACTION_STOP -> {
+                usbRequested = false
                 usb.close()
                 controller.stop()
                 stopForeground(STOP_FOREGROUND_REMOVE)

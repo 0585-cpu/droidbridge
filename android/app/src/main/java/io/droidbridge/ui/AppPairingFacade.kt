@@ -33,7 +33,7 @@ class AppPairingFacade(
     private var coordinator: PairingCoordinator? = null
     private var updates: Job? = null
 
-    override fun beginPairing() {
+    @Synchronized override fun beginPairing() {
         cancel()
         val pairingServer = serverFactory()
         try {
@@ -53,13 +53,19 @@ class AppPairingFacade(
             onWindowClosed = { pairingServer.close() },
         )
         coordinator = coord
-        updates = scope.launch { coord.state.collect { _state.value = it } }
+        updates = scope.launch {
+            coord.state.collect { state ->
+                synchronized(this@AppPairingFacade) {
+                    if (coordinator === coord) _state.value = state
+                }
+            }
+        }
         coord.openWindow(60.seconds)
     }
 
     override fun approve() { coordinator?.approve() }
     override fun reject() { coordinator?.reject() }
-    override fun cancel() {
+    @Synchronized override fun cancel() {
         updates?.cancel()
         updates = null
         coordinator?.cancel()

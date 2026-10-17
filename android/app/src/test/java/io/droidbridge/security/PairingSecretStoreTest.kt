@@ -15,6 +15,7 @@ import kotlin.test.assertTrue
 /** Minimal SharedPreferences fake: only the string operations the store uses. */
 class FakePrefs : SharedPreferences {
     val values = HashMap<String, String>()
+    val listeners = mutableSetOf<SharedPreferences.OnSharedPreferenceChangeListener>()
     var commits = 0
 
     override fun getAll(): MutableMap<String, *> = HashMap(values)
@@ -25,8 +26,8 @@ class FakePrefs : SharedPreferences {
     override fun getFloat(key: String?, defValue: Float) = defValue
     override fun getBoolean(key: String?, defValue: Boolean) = defValue
     override fun contains(key: String?) = values.containsKey(key)
-    override fun registerOnSharedPreferenceChangeListener(l: SharedPreferences.OnSharedPreferenceChangeListener?) {}
-    override fun unregisterOnSharedPreferenceChangeListener(l: SharedPreferences.OnSharedPreferenceChangeListener?) {}
+    override fun registerOnSharedPreferenceChangeListener(l: SharedPreferences.OnSharedPreferenceChangeListener?) { l?.let { listeners.add(it) } }
+    override fun unregisterOnSharedPreferenceChangeListener(l: SharedPreferences.OnSharedPreferenceChangeListener?) { listeners.remove(l) }
 
     override fun edit(): SharedPreferences.Editor = object : SharedPreferences.Editor {
         private val pending = HashMap<String, String?>()
@@ -40,9 +41,13 @@ class FakePrefs : SharedPreferences {
         override fun remove(key: String?) = apply { pending[key!!] = null }
         override fun clear() = apply { clearAll = true }
         override fun commit(): Boolean {
+            val before = HashMap(values)
             if (clearAll) values.clear()
             for ((k, v) in pending) if (v == null) values.remove(k) else values[k] = v
             commits++
+            (before.keys + values.keys).filter { before[it] != values[it] }.forEach { key ->
+                listeners.toList().forEach { it.onSharedPreferenceChanged(this@FakePrefs, key) }
+            }
             return true
         }
         override fun apply() { commit() }

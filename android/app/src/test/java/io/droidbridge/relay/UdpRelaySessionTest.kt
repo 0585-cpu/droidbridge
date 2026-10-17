@@ -8,6 +8,18 @@ import java.net.*
 import java.io.*
 
 class UdpRelaySessionTest {
+    @Test fun `typed queue retains packet ownership and counts header bytes for empty payloads`() = runBlocking {
+        var drops=0
+        val q=BoundedPacketQueue<RawAssociationDatagram>(2,56,{28+it.payload.size}) { drops++ }
+        fun packet(seq: Long)=RawAssociationDatagram(ByteArray(0),0,seq,4,byteArrayOf(8,8,8,8),53)
+        val first=packet(1); val second=packet(2); val third=packet(3)
+        q.offer(first); q.offer(second); q.offer(third)
+        assertSame(second,q.take()); assertSame(third,q.take()); assertEquals(1,drops)
+        q.offer(packet(4).copy(payload=ByteArray(29)))
+        assertEquals(2,drops)
+        q.close(); assertNull(q.take())
+    }
+
     @Test fun `queue drops oldest and never exceeds datagram or byte bounds`() = runBlocking {
         var drops=0L
         val q=BoundedDatagramQueue(2,5) { drops++ }

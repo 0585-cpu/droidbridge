@@ -12,11 +12,14 @@ class AndroidRelayBackend(private val controller: CellularNetworkController) : R
     @Volatile private var traffic=RelayTrafficPolicy()
     private val icmp=AndroidIcmpEchoTransport(controller)
     private var probeGeneration=-1L
+    private var probeIpv6=false
     private var pingFlags=0L
     @Synchronized fun beginRun(profile: TrafficProfile) { traffic=RelayTrafficPolicy(profile.copy(dnsSuffixes=profile.dnsSuffixes.toList())); probeGeneration=-1 }
     override fun trafficPolicy()=traffic
     override suspend fun connect(destination: OpenDestination): Socket=controller.connectTcp(destination,traffic.profile.socketPolicy)
     override suspend fun connectUdp(destination: OpenDestination): DatagramSocket=controller.connectUdp(destination,traffic.profile.socketPolicy)
+    override suspend fun openUdpAssociation(family: Int): DatagramSocket=controller.openUdpAssociation(family,traffic.profile.socketPolicy)
+    override fun requireUdpDestination(address: java.net.InetAddress)=controller.requireAllowed(address)
     override fun release(socket: Closeable)=controller.release(socket)
     override suspend fun echo(request: IcmpRequest): IcmpReply {
         val required=if(request.family==4) Capability.ICMP4 else Capability.ICMP6
@@ -35,14 +38,18 @@ class AndroidRelayBackend(private val controller: CellularNetworkController) : R
         val generation=controller.currentGeneration()
         val available=cellularReady()
         val ipv6=available && controller.ipv6Available()
-        if(available && probeGeneration!=generation) {
+        // Initial properties can make IPv6 ready without replacing the network or retiring
+        // existing IPv4 flows. Include readiness so an early probe cannot suppress ICMP6 forever.
+        if(available && (probeGeneration!=generation || probeIpv6!=ipv6)) {
             pingFlags=(if(icmp.probe(4,traffic.profile.socketPolicy)) Capability.ICMP4 else 0) or
                 (if(ipv6 && icmp.probe(6,traffic.profile.socketPolicy)) Capability.ICMP6 else 0)
             probeGeneration=generation
+            probeIpv6=ipv6
         }
         val prefix=if(ipv6) controller.nat64Prefix()?.toList() ?: emptyList() else emptyList()
         val p=traffic.profile
         val flags=Capability.PROFILES or (if(available) Capability.TCP4 or Capability.UDP4 or pingFlags else 0) or
+            (if(available && controller.udpAssociationAvailable()) Capability.UDP_ASSOCIATION else 0) or
             (if(ipv6) Capability.TCP6 or Capability.UDP6 else 0) or (if(prefix.isNotEmpty()) Capability.NAT64 else 0)
         return RelayCapabilities(flags,generation,p.socketPolicy.ipv4Ttl ?: 0,p.socketPolicy.ipv6HopLimit ?: 0,
             (if(p.dnsSuffixes.isNotEmpty()) 1 else 0) or (if(p.uploadBytesPerSecond>0 || p.downloadBytesPerSecond>0) 2 else 0),

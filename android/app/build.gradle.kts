@@ -22,7 +22,19 @@ android {
         release {
             isMinifyEnabled = false
         }
+        create("profileable") {
+            initWith(getByName("release"))
+            isDebuggable = false
+            isJniDebuggable = false
+            // Local measurement builds update the existing app without losing its pairing.
+            signingConfig = signingConfigs.getByName("debug")
+            versionNameSuffix = "-profileable"
+            matchingFallbacks += listOf("release")
+        }
     }
+
+    // Select profileable only for its device checks; normal debug tests stay unchanged.
+    testBuildType = providers.gradleProperty("droidbridgeTestBuildType").getOrElse("debug")
 
     buildFeatures {
         compose = true
@@ -36,7 +48,8 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
         // JDK17's NIO adaptor on macOS drops connected empty datagrams; use the plain
-        // implementation for real loopback tests, matching Android's socket semantics.
+        // implementation for framework-free loopback tests. Android's empty-send workaround
+        // is checked separately by the on-device UDP tests.
         unitTests.all { it.jvmArgs("-Djdk.net.usePlainDatagramSocketImpl=true"); it.systemProperty("droidbridge.protocolVectors", rootProject.file("../protocol/test-vectors").absolutePath) }
     }
 }

@@ -18,6 +18,24 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 
 class PairingServerTest {
+    @Test fun `partial frame timeout closes the real accepted socket`() = runBlocking {
+        val server = PairingServer(0)
+        server.open()
+        try {
+            val accepted = async { server.acceptOne() }
+            Socket("127.0.0.1",server.boundPort).use { client ->
+                client.soTimeout=1500
+                val channel=accepted.await()
+                // Stall within the length field, then within a declared body.
+                client.getOutputStream().write(byteArrayOf(0,0))
+                kotlin.test.assertFailsWith<kotlinx.coroutines.TimeoutCancellationException> {
+                    kotlinx.coroutines.withTimeout(100) { channel.readFrame() }
+                }
+                assertEquals(-1,client.getInputStream().read())
+            }
+        } finally { server.close() }
+    }
+
     @Test
     fun `pairing listener binds the IPv4 service address`() {
         val server = PairingServer(0)

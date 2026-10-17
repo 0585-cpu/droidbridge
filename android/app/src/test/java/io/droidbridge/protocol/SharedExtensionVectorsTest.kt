@@ -21,6 +21,7 @@ class SharedExtensionVectorsTest {
             val encoded=when(val payload=msg.payload) {
                 is RelayCapabilities -> ExtensionCodec.encodeCapabilities(payload)
                 is UdpOpen -> ExtensionCodec.encodeUdpOpen(payload)
+                is UdpAssociationOpen -> ExtensionCodec.encodeUdpAssociationOpen(payload)
                 is OpenDestination -> DbpCodec.encodeOpenTcp(payload)
                 else -> bytes
             }

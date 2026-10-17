@@ -4,10 +4,4 @@
     <string name="notification_channel">DroidBridge Relay</string>
     <string name="status_running">Running</string>
     <string name="status_blocked_cellular">Blocked: cellular unavailable</string>
-    <string name="start">Start</string>
-    <string name="stop">Stop</string>
-    <string name="pair_new_mac">Pair New Mac</string>
-    <string name="forget_mac">Forget Mac</string>
-    <string name="approve">Approve</string>
-    <string name="reject">Reject</string>
 </resources>

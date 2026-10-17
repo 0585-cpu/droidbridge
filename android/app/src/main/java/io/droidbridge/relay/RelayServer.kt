@@ -51,6 +51,8 @@ interface RelayBackend {
     fun carrierName(): String?
     fun cellularReady(): Boolean
     suspend fun connectUdp(destination: OpenDestination): DatagramSocket = throw UnsupportedOperationException("UDP unavailable")
+    suspend fun openUdpAssociation(family: Int): DatagramSocket = throw UnsupportedOperationException("UDP association unavailable")
+    fun requireUdpDestination(address: InetAddress) = io.droidbridge.policy.DestinationPolicy.requireAllowed(address)
     suspend fun echo(request: IcmpRequest): IcmpReply = throw UnsupportedOperationException("ICMP unavailable")
     fun capabilities(): RelayCapabilities = RelayCapabilities(flags=if(cellularReady()) Capability.TCP4 else 0)
     fun release(socket: Closeable) {}
@@ -67,12 +69,14 @@ class RelayServer(
     private val maximumFlows: Int = 128,
     private val bridge: StreamBridge = StreamBridge(),
     private val maximumUdpFlows: Int = 256,
+    private val onUdpAssociationExit: (Int,UdpAssociationExitReason) -> Unit = { _,_ -> },
 ) {
     init { require(maximumFlows in 1..256); require(maximumUdpFlows in 1..256) }
 
     val metrics = RelayMetrics(maximumFlows, backend::carrierName)
 
     private val connectionSlots = Semaphore(576) // combined 512 data flows + 64 bounded control/auth connections
+    private val pendingOpens = Semaphore(32)
     private val flowSlots = Semaphore(maximumFlows)
     private val udpSlots = Semaphore(maximumUdpFlows)
     private val epoch = AtomicLong()
@@ -86,15 +90,21 @@ class RelayServer(
     val boundAddress: InetAddress? get() = serverSocket?.inetAddress
 
     fun start(port: Int = DBP_PORT) {
-        val socket = ServerSocket().apply {
-            reuseAddress = false
+        val socket = ServerSocket()
+        try {
+            // A completed relay connection can leave this local port in TIME_WAIT.
+            // Permit an immediate Stop/Start without sharing a live listener's port.
+            socket.reuseAddress = true
             // Android getLoopbackAddress() is ::1; DBAM's fixed service target is IPv4.
-            bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), port), 128)
+            socket.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), port), 128)
+        } catch (error: Exception) {
+            runCatching { socket.close() }
+            throw error
         }
         serverSocket = socket
-        val serverScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val serverScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
         scope = serverScope
-        serverScope.launch {
+        serverScope.launch(RelayDispatchers.accepts) {
             while (true) {
                 val client = try {
                     runInterruptible { socket.accept() }
@@ -110,6 +120,15 @@ class RelayServer(
         }
     }
 
+    /** Serves an in-process connection (an AOA pipe) exactly like an accepted loopback socket. */
+    fun accept(client: Socket): Boolean = synchronized(this) {
+        val serverScope = scope
+        if (serverSocket == null || serverScope == null) return false
+        allClients += client
+        serverScope.launch { handleConnection(client) }
+        true
+    }
+
     @Synchronized fun stop() {
         cancelActiveFlows()
         allClients.clear()
@@ -122,8 +141,10 @@ class RelayServer(
     /** Immediately tears down established bridges while leaving the authenticated listener available. */
     fun cancelActiveFlows() {
         epoch.incrementAndGet()
-        allClients.toList().forEach { runCatching { it.close() } }
-        activeFlowSockets.toList().forEach { socket -> runCatching { socket.close() } }
+        // Iterate the concurrent sets directly: toList() can observe size == 1 followed by an
+        // empty iterator when a bridge finishes concurrently, throwing during disconnect.
+        allClients.forEach { runCatching { it.close() } }
+        activeFlowSockets.forEach { socket -> runCatching { socket.close() } }
     }
 
     private suspend fun handleConnection(client: Socket) {
@@ -163,6 +184,7 @@ class RelayServer(
                 writeFrame(output,session.sign(DbpMessageType.CAPABILITIES_RESPONSE,ExtensionCodec.encodeCapabilities(caps)))
             }
             DbpMessageType.OPEN_UDP -> openUdp(client,output,session,ExtensionCodec.decodeUdpOpen(payload))
+            DbpMessageType.OPEN_UDP_ASSOCIATION -> openUdpAssociation(client,output,session,ExtensionCodec.decodeUdpAssociationOpen(payload))
             DbpMessageType.ICMP_ECHO -> {
                 val request=ExtensionCodec.decodeIcmpRequest(payload)
                 try {
@@ -214,17 +236,24 @@ class RelayServer(
         var remote: Socket?=null
         var opened=false
         try {
-            val connected=try { backend.connect(destination) } catch(e: CancellationException) { throw e }
+            if (!pendingOpens.tryAcquire()) {
+                writeFrame(output,session.sign(DbpMessageType.OPEN_ERROR,DbpCodec.encodeError(DbpErrorCode.SESSION_LIMIT)))
+                return
+            }
+            val clientInput = try {
+                watchPendingOpen(client) { remote = backend.connect(destination) }
+            } catch(e: CancellationException) { throw e }
             catch(e: Exception) { metrics.recordError(e); writeFrame(output,session.sign(DbpMessageType.OPEN_ERROR,DbpCodec.encodeError(errorCode(e)))); return }
-            remote=connected
+            finally { pendingOpens.release() }
+            val connected = checkNotNull(remote)
             currentCoroutineContext().ensureActive()
             if(startEpoch!=epoch.get() || client.isClosed) return
             activeFlowSockets+=connected
             client.soTimeout=0
             writeFrame(output,session.sign(DbpMessageType.OPEN_OK,ByteArray(0)))
             metrics.flowOpened(); opened=true
-            val a=BridgeEnd("client",client.getInputStream(),output,{ runCatching { client.shutdownOutput() } })
-            val b=BridgeEnd("remote",connected.getInputStream(),connected.getOutputStream(),{ runCatching { connected.shutdownOutput() } })
+            val a=BridgeEnd("client",clientInput,output,{ runCatching { client.shutdownOutput() } },{ client.close() })
+            val b=BridgeEnd("remote",connected.getInputStream(),connected.getOutputStream(),{ runCatching { connected.shutdownOutput() } },{ connected.close() })
             bridge.copyBidirectional(a,b,backend.trafficPolicy(),metrics::addTransfer)
         } finally {
             remote?.let { activeFlowSockets-=it; runCatching { it.close() }; backend.release(it) }
@@ -232,6 +261,43 @@ class RelayServer(
             flowSlots.release()
         }
     }
+
+    /** A reset aborts the upstream attempt. EOF is a valid half-close and must retain replies.
+     * Early bytes are bounded by the DBAM receive window and replayed without losing ordering. */
+    private suspend fun watchPendingOpen(client: Socket, connect: suspend () -> Unit): InputStream =
+        kotlinx.coroutines.coroutineScope {
+            val owner = currentCoroutineContext()[Job]!!
+            val done = java.util.concurrent.atomic.AtomicBoolean()
+            val prefix = java.io.ByteArrayOutputStream()
+            val input = client.getInputStream()
+            client.soTimeout = 100
+            val watcher = launch(RelayDispatchers.pendingReads) {
+                val buffer = ByteArray(4096)
+                try {
+                    while (!done.get() && prefix.size() < 65536) {
+                        val count = try { input.read(buffer, 0, minOf(buffer.size, 65536-prefix.size())) }
+                        catch (_: java.net.SocketTimeoutException) { continue }
+                        if (count < 0) break
+                        prefix.write(buffer, 0, count)
+                    }
+                } catch (error: IOException) {
+                    owner.cancel(CancellationException("pending client aborted", error))
+                }
+            }
+            try { connect() }
+            finally {
+                done.set(true)
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { watcher.join() }
+            }
+            val replay = java.io.ByteArrayInputStream(prefix.toByteArray())
+            object : InputStream() {
+                override fun read(): Int = if (replay.available() > 0) replay.read() else input.read()
+                override fun read(b: ByteArray, off: Int, len: Int): Int =
+                    if (replay.available() > 0) replay.read(b,off,len) else input.read(b,off,len)
+                // EOF never closes the live socket: the opposite direction may still reply.
+                override fun close() = input.close()
+            }
+        }
 
     private suspend fun openUdp(client: Socket,output: OutputStream,session: AuthenticatedSession,request: UdpOpen) {
         if(!backend.cellularReady()) { writeFrame(output,session.sign(DbpMessageType.OPEN_UDP_ERROR,ExtensionCodec.encodeUdpError(DbpErrorCode.CELLULAR_UNAVAILABLE))); return }
@@ -256,8 +322,39 @@ class RelayServer(
         }
     }
 
+    private suspend fun openUdpAssociation(client: Socket,output: OutputStream,session: AuthenticatedSession,request: UdpAssociationOpen) {
+        if(!backend.cellularReady()) { writeFrame(output,session.sign(DbpMessageType.OPEN_UDP_ERROR,ExtensionCodec.encodeUdpError(DbpErrorCode.CELLULAR_UNAVAILABLE))); return }
+        val flags=backend.capabilities().flags
+        val familyFlag=if(request.family==4) Capability.UDP4 else Capability.UDP6
+        if(flags and Capability.UDP_ASSOCIATION==0L || flags and familyFlag==0L) {
+            val error=if(flags and Capability.UDP_ASSOCIATION==0L) DbpErrorCode.UDP_UNSUPPORTED else DbpErrorCode.ADDRESS_FAMILY_UNAVAILABLE
+            writeFrame(output,session.sign(DbpMessageType.OPEN_UDP_ERROR,ExtensionCodec.encodeUdpError(error))); return
+        }
+        if(!udpSlots.tryAcquire()) { writeFrame(output,session.sign(DbpMessageType.OPEN_UDP_ERROR,ExtensionCodec.encodeUdpError(DbpErrorCode.SESSION_LIMIT))); return }
+        val startEpoch=epoch.get()
+        var remote: DatagramSocket?=null
+        var opened=false
+        try {
+            val socket=try { backend.openUdpAssociation(request.family) } catch(e: CancellationException) { throw e }
+            catch(e: Exception) { metrics.recordError(e); writeFrame(output,session.sign(DbpMessageType.OPEN_UDP_ERROR,ExtensionCodec.encodeUdpError(errorCode(e)))); return }
+            remote=socket
+            currentCoroutineContext().ensureActive()
+            if(startEpoch!=epoch.get() || client.isClosed) return
+            client.soTimeout=0
+            val associationId=nextUdpId.getAndIncrement()
+            writeFrame(output,session.sign(DbpMessageType.OPEN_UDP_OK,ExtensionCodec.encodeUdpOk(associationId,request.idleSeconds)))
+            metrics.udpOpened(); opened=true
+            UdpAssociationRelaySession(client,socket,request,backend.trafficPolicy(),backend::requireUdpDestination,metrics::addUdpDrops,metrics::addTransfer,
+                onExit={ reason -> onUdpAssociationExit(associationId,reason) }).run()
+        } finally {
+            remote?.let { it.close(); backend.release(it) }
+            if(opened) metrics.udpClosed()
+            udpSlots.release()
+        }
+    }
+
     /** Reads one framed control message: 64-byte header, then the type's exact payload. */
-    private suspend fun readMessage(input: DataInputStream): Pair<DbpHeader, ByteArray> = withContext(Dispatchers.IO) {
+    private suspend fun readMessage(input: DataInputStream): Pair<DbpHeader, ByteArray> = withContext(RelayDispatchers.controlReads) {
         val headerBytes = ByteArray(DbpCodec.HEADER_SIZE)
         runInterruptible { input.readFully(headerBytes) }
         val header = DbpCodec.decodeHeader(headerBytes)
@@ -268,7 +365,7 @@ class RelayServer(
         header to (prefix + rest)
     }
 
-    private suspend fun writeFrame(output: OutputStream, frame: ByteArray) = withContext(Dispatchers.IO) {
+    private suspend fun writeFrame(output: OutputStream, frame: ByteArray) = withContext(RelayDispatchers.controlWrites) {
         runInterruptible { output.write(frame); output.flush() }
     }
 

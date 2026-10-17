@@ -3,6 +3,8 @@ package io.droidbridge.relay
 import io.droidbridge.network.SocketEgressPolicy
 import io.droidbridge.policy.DnsDomainFilter
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.math.ceil
@@ -43,8 +45,8 @@ class RelayTrafficPolicy(val profile: TrafficProfile = TrafficProfile()) {
     private val uploadBucket=TokenBucket(profile.uploadBytesPerSecond,profile.burstBytes)
     private val downloadBucket=TokenBucket(profile.downloadBytesPerSecond,profile.burstBytes)
     private val uploadGate=Mutex(); private val downloadGate=Mutex()
-    suspend fun upload(bytes: Int) = acquire(uploadBucket,uploadGate,bytes)
-    suspend fun download(bytes: Int) = acquire(downloadBucket,downloadGate,bytes)
+    suspend fun upload(bytes: Int) = acquire(uploadBucket,uploadGate,bytes,profile.uploadBytesPerSecond)
+    suspend fun download(bytes: Int) = acquire(downloadBucket,downloadGate,bytes,profile.downloadBytesPerSecond)
     suspend fun writeUpload(output: java.io.OutputStream,bytes: ByteArray) = writeShaped(output,bytes,::upload)
     suspend fun writeDownload(output: java.io.OutputStream,bytes: ByteArray) = writeShaped(output,bytes,::download)
     private suspend fun writeShaped(output: java.io.OutputStream,bytes: ByteArray,shape: suspend (Int) -> Unit) {
@@ -57,8 +59,11 @@ class RelayTrafficPolicy(val profile: TrafficProfile = TrafficProfile()) {
         }
         kotlinx.coroutines.runInterruptible(RelayDispatchers.socketWrites) { output.flush() }
     }
-    private suspend fun acquire(bucket: TokenBucket, gate: Mutex, count: Int) {
+    private suspend fun acquire(bucket: TokenBucket, gate: Mutex, count: Int, rate: Int) {
         require(count >= 0)
+        currentCoroutineContext().ensureActive()
+        // Unlimited traffic needs neither shared shaping state nor per-burst bookkeeping.
+        if(rate == 0) return
         gate.withLock {
             var remaining=count
             while(remaining > 0) {

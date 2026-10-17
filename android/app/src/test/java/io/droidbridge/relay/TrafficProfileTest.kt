@@ -46,6 +46,28 @@ class TrafficProfileTest {
         yield()
         withTimeout(1000) { blocked.cancelAndJoin() }
     }
+    @Test fun `unlimited transfers reject a cancelled caller including zero bytes`() = runBlocking {
+        val policy=RelayTrafficPolicy()
+        for(upload in listOf(true,false)) for(bytes in listOf(0,1232,Int.MAX_VALUE)) {
+            var rejected=false
+            val caller=launch(start=CoroutineStart.UNDISPATCHED) {
+                coroutineContext.cancel()
+                try { if(upload) policy.upload(bytes) else policy.download(bytes) }
+                catch(_: CancellationException) { rejected=true }
+            }
+            caller.join()
+            assertTrue("cancelled transfer accepted: upload=$upload bytes=$bytes",rejected)
+        }
+    }
+    @Test fun `unlimited directions validate counts and accept transfers larger than burst`() = runBlocking {
+        val policy=RelayTrafficPolicy(TrafficProfile(burstBytes=1232))
+        for(upload in listOf(true,false)) {
+            try { if(upload) policy.upload(-1) else policy.download(-1); fail("negative transfer accepted") }
+            catch(_: IllegalArgumentException) {}
+            if(upload) { policy.upload(0); policy.upload(Int.MAX_VALUE) }
+            else { policy.download(0); policy.download(Int.MAX_VALUE) }
+        }
+    }
     @Test fun `shaped stream writes never release more than configured burst at once`() = runBlocking {
         val profile=TrafficProfile(uploadBytesPerSecond=1000000,downloadBytesPerSecond=1000000,burstBytes=1232)
         val policy=RelayTrafficPolicy(profile)

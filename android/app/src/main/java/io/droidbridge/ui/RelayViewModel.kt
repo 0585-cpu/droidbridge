@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.update
 
 data class RelayUiState(
     val relayStatus: RelayStatus = RelayStatus.STOPPED,
@@ -41,10 +42,16 @@ class RelayViewModel(
     private val store: PairingSecretStore,
     private val pairing: PairingFacade,
 ) : ViewModel() {
-    private val _uiState = MutableStateFlow(RelayUiState(pairedMacName = store.load()?.displayName,profile=controller.profile.value))
+    private val _uiState = MutableStateFlow(RelayUiState(pairedMacName = loadPairedMacName(),profile=controller.profile.value))
     val uiState: StateFlow<RelayUiState> = _uiState
 
     init {
+        // Observe persistence, not this screen's pairing facade: an exchange on a previous
+        // screen can finish after recreation. Packet/statistics updates never decrypt keys.
+        store.changes.onEach {
+            val name = loadPairedMacName()
+            _uiState.update { it.copy(pairedMacName = name) }
+        }.launchIn(viewModelScope)
         combine(controller.state, controller.metrics, pairing.state, controller.profile, controller.capabilities) { relay, metrics, pairingState, profile, capabilities ->
             _uiState.value.copy(
                 relayStatus = relay.relayStatus,
@@ -61,9 +68,13 @@ class RelayViewModel(
                 uploadRate = metrics.uploadBytesPerSecond,
                 downloadRate = metrics.downloadBytesPerSecond,
                 pairing = pairingState,
-                pairedMacName = store.load()?.displayName,
             )
         }.onEach { _uiState.value = it }.launchIn(viewModelScope)
+    }
+
+    private fun loadPairedMacName(): String? {
+        val peer = store.load() ?: return null
+        return try { peer.displayName } finally { peer.secret.fill(0) }
     }
 
     fun saveProfile(ttl: String,hop: String,domains: String,upload: String,download: String,burst: String) {
@@ -75,13 +86,19 @@ class RelayViewModel(
                 domains.split(',', '\n').map {it.trim()}.filter {it.isNotEmpty()},optional(upload) ?: 0,optional(download) ?: 0,optional(burst) ?: 65536)
             check(controller.updateProfile(profile)) { "Stop the relay before editing the profile" }
             _uiState.value=_uiState.value.copy(profile=profile,profileError=null)
-        } catch(e: Exception) { _uiState.value=_uiState.value.copy(profileError="Invalid profile: TTL/Hop Limit 1–255; nonnegative rates; burst 1,232–4,194,304 bytes. Stop before editing.") }
+        } catch(e: Exception) { _uiState.value=_uiState.value.copy(profileError="설정을 확인해 주세요: TTL/Hop Limit 1–255, 속도 0 이상, 순간 전송 허용량 1,232–4,194,304바이트. 공유 중에는 수정할 수 없습니다.") }
     }
 
     fun onStartClicked() { if (_uiState.value.canStart) controller.start() }
     fun onStopClicked() { if (_uiState.value.canStop) controller.stop() }
 
+    override fun onCleared() {
+        pairing.cancel()
+        super.onCleared()
+    }
+
     fun onForgetMacClicked() {
+        pairing.cancel()
         controller.stop()      // never delete the secret while the relay is still serving
         controller.forgetPeer()
         _uiState.value = _uiState.value.copy(pairedMacName = null)

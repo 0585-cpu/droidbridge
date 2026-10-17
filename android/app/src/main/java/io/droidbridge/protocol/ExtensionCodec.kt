@@ -13,6 +13,7 @@ object Capability {
     const val ICMP6 = 1L shl 5
     const val NAT64 = 1L shl 6
     const val PROFILES = 1L shl 9
+    const val UDP_ASSOCIATION = 1L shl 10
 }
 
 data class RelayCapabilities(
@@ -31,6 +32,10 @@ data class RelayCapabilities(
 
 data class UdpOpen(val destination: OpenDestination, val idleSeconds: Int = 120) : DbpPayload {
     init { require(destination !is OpenDestination.Domain); require(idleSeconds in 30..300) }
+}
+
+data class UdpAssociationOpen(val family: Int, val idleSeconds: Int = 120) : DbpPayload {
+    init { require(family == 4 || family == 6); require(idleSeconds in 30..300) }
 }
 
 data class IcmpRequest(val family: Int, val ttl: Int, val requestId: Long, val destination: ByteArray, val payload: ByteArray) : DbpPayload
@@ -65,6 +70,15 @@ object ExtensionCodec {
         if (idle !in 30..300) throw DbpProtocolException("UDP idle")
         return UdpOpen(DbpCodec.decodeOpenTcp(bytes.copyOf(bytes.size-2)),idle)
     }
+    fun encodeUdpAssociationOpen(open: UdpAssociationOpen): ByteArray =
+        ByteBuffer.allocate(4).put(open.family.toByte()).put(0).putShort(open.idleSeconds.toShort()).array()
+    fun decodeUdpAssociationOpen(bytes: ByteArray): UdpAssociationOpen {
+        if(bytes.size != 4) throw DbpProtocolException("UDP association size")
+        val family=bytes[0].toInt() and 255
+        val idle=((bytes[2].toInt() and 255) shl 8) or (bytes[3].toInt() and 255)
+        if(family !in listOf(4,6) || bytes[1] != 0.toByte() || idle !in 30..300) throw DbpProtocolException("UDP association open")
+        return UdpAssociationOpen(family,idle)
+    }
     fun encodeUdpOk(id: Int, idle: Int): ByteArray = ByteBuffer.allocate(8).putInt(id).putShort(idle.toShort()).putShort(1232).array()
     fun encodeUdpError(error: DbpErrorCode): ByteArray = ByteBuffer.allocate(4).putShort(error.code.toShort()).putShort(0).array()
     fun decodeIcmpRequest(bytes: ByteArray): IcmpRequest {
@@ -91,8 +105,14 @@ object DatagramCodec {
     fun read(input: InputStream, direction: Int): RawDatagram? {
         val first=input.read(); if(first < 0) return null
         val stream=DataInputStream(input)
-        val size=(first shl 8) or stream.readUnsignedByte()
-        val flags=stream.readUnsignedByte(); val reserved=stream.readUnsignedByte(); val sequence=stream.readInt().toLong() and 0xffffffffL
+        val header=ByteArray(8)
+        header[0]=first.toByte()
+        stream.readFully(header,1,7)
+        val fields=ByteBuffer.wrap(header)
+        val size=fields.short.toInt() and 65535
+        val flags=fields.get().toInt() and 255
+        val reserved=fields.get().toInt() and 255
+        val sequence=fields.int.toLong() and 0xffffffffL
         if(size > MAX_PAYLOAD || flags != direction || reserved != 0) throw DbpProtocolException("datagram header")
         return RawDatagram(ByteArray(size).also { stream.readFully(it) },flags,sequence)
     }
