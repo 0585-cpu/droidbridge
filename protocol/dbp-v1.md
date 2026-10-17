@@ -152,3 +152,44 @@ Health: `connect → HELLO ← HELLO_OK → HEALTH ← HEALTH_RESPONSE → close
 
 Neither side logs payloads, DNS names, domains from `OPEN_TCP`, or the secret.
 Diagnostics may record message type, error code, byte counts and timings only.
+
+## UDP source associations (capability bit 10)
+
+Peers advertising `UDP_ASSOCIATION = 1 << 10` accept authenticated message
+`OPEN_UDP_ASSOCIATION (0x44)`. Its fixed four-byte payload contains family (4 or 6),
+a reserved zero byte, and a big-endian uint16 idle timeout (30–300 seconds).
+The reply is the existing `OPEN_UDP_OK` or `OPEN_UDP_ERROR`. The successful reply
+retains its eight-byte layout and maximum datagram payload of 1232 bytes.
+Without this capability the host retains the existing per-destination `OPEN_UDP`.
+
+Each association stream owns one unconnected cellular UDP socket. The host groups
+packet-engine flows by their original numeric source address, family and port,
+allowing the same socket to contact multiple peers. IPv4 and IPv6 are separate.
+The Android cellular network may still translate external ports per destination;
+this extension does not promise endpoint-independent carrier NAT.
+
+After OPEN, each datagram has a 28-byte header followed by its payload:
+
+| Offset | Size | Value |
+| --- | --- | --- |
+| 0 | 2 | Payload length, big-endian, 0–1232 |
+| 2 | 1 | Direction: 0 Mac to phone, 1 phone to Mac |
+| 3 | 1 | Association family, 4 or 6 |
+| 4 | 4 | Sequence, big-endian uint32 |
+| 8 | 2 | Peer port, big-endian uint16, nonzero |
+| 10 | 2 | Reserved, zero |
+| 12 | 16 | Numeric peer address; IPv4 uses first four bytes and twelve zeros |
+
+The receiver validates header bounds, padding, direction and family before
+reading the bounded body. Zero-length packets remain distinct datagrams.
+Android applies destination policy to every outbound peer and admits inbound
+packets only from an endpoint previously sent to and still active within the idle interval.
+Valid traffic in either direction refreshes that endpoint; unknown or oversized
+inbound packets do not.
+The peer set is limited to 256. The association uses the existing aggregate
+traffic shaping and TTL/hop policy and bounded queues (64 datagrams, 256 KiB).
+Oversized and unsolicited packets are dropped and counted. Stop, idle expiry,
+stream EOF or cellular generation change closes the socket. Host flow retirement
+discards that flow's unsent packets, and retiring the final flow closes the
+association. Session ownership tokens fence delayed callbacks after replacement.
+Canonical control fixtures and raw packet literals are in `test-vectors/dbp-extensions.json`.

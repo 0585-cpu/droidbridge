@@ -14,6 +14,7 @@ typedef uint32_t db_flow_id_t;
 
 typedef enum {
     DB_ENGINE_OK = 0,
+    DB_ENGINE_AGAIN = 1, /* transient receive pressure; caller retains all bytes */
     DB_ENGINE_ERR_ARGUMENT = -1,
     DB_ENGINE_ERR_CONFIG = -2,
     DB_ENGINE_ERR_UNKNOWN_FLOW = -3,
@@ -21,10 +22,11 @@ typedef enum {
 } db_engine_status_t;
 
 typedef enum {
-    DB_CLOSE_NORMAL = 0,   /* Mac or remote sent FIN */
+    DB_CLOSE_NORMAL = 0,   /* Mac FIN: drain accepted bytes, half-close relay output, keep receiving. */
     DB_CLOSE_RESET = 1,    /* RST / abort */
     DB_CLOSE_LIMIT = 2,    /* flow limit or buffer overflow */
-    DB_CLOSE_TIMEOUT = 3
+    DB_CLOSE_TIMEOUT = 3,
+    DB_CLOSE_COMPLETE = 4  /* TCP PCB closed: gracefully finish queued relay output; do not abort it. */
 } db_close_reason_t;
 
 /* send_flow returns the number of bytes accepted, or DB_SEND_AGAIN when the relay queue is full
@@ -59,6 +61,9 @@ typedef struct {
     void (*close_udp)(void *, db_flow_id_t, db_close_reason_t reason);
     void (*send_icmp)(void *, db_flow_id_t, uint8_t family, const uint8_t *dst, uint8_t ttl,
                       const uint8_t *payload, size_t length);
+    /* Source endpoint for shared UDP transport; preferred over open_udp when supplied. */
+    void (*open_udp_endpoint)(void *, db_flow_id_t, uint8_t family, const uint8_t *dst,
+                              uint16_t destination_port, uint16_t source_port, const uint8_t *src);
 } db_engine_config_t;
 
 typedef struct db_engine db_engine_t;
@@ -74,6 +79,8 @@ void db_engine_poll(db_engine_t *engine);
 /* Relay -> engine notifications. */
 db_engine_status_t db_engine_on_relay_opened(db_engine_t *engine, db_flow_id_t flow);
 db_engine_status_t db_engine_on_relay_open_failed(db_engine_t *engine, db_flow_id_t flow);
+/* OK consumes all bytes. AGAIN consumes none: pause relay reads and retry the same chunk
+ * after Mac ACKs free capacity. Chunks larger than 256 KiB are rejected as arguments. */
 db_engine_status_t db_engine_on_relay_data(db_engine_t *engine, db_flow_id_t flow, const uint8_t *data, size_t length);
 db_engine_status_t db_engine_on_relay_writable(db_engine_t *engine, db_flow_id_t flow);
 db_engine_status_t db_engine_on_relay_closed(db_engine_t *engine, db_flow_id_t flow, int is_error);

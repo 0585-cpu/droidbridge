@@ -89,6 +89,8 @@ typedef struct {
     size_t len, outlen;
     db_flow_id_t id;
     uint32_t now;
+    uint16_t source_port, destination_port;
+    uint8_t source_address[16];
 } state;
 static void emit(void *c, const uint8_t *p, size_t n) {
     state *s = c;
@@ -102,6 +104,13 @@ static void open_ip(void *c, db_flow_id_t id, uint8_t f, const uint8_t *p, uint1
     s->id = id;
     s->family = f;
     memcpy(s->dst, p, f == 4 ? 4 : 16);
+}
+static void open_endpoint(void *c, db_flow_id_t id, uint8_t family, const uint8_t *dst,
+                          uint16_t destination_port, uint16_t source_port, const uint8_t *src) {
+    open_ip(c, id, family, dst, destination_port);
+    ((state *)c)->source_port = source_port;
+    ((state *)c)->destination_port = destination_port;
+    memcpy(((state *)c)->source_address, src, family == 4 ? 4 : 16);
 }
 static void oldopen(void *c, db_flow_id_t id, const uint8_t *p, uint16_t port) { open_ip(c, id, 4, p, port); }
 static long send_tcp(void *c, db_flow_id_t id, const uint8_t *p, size_t n) {
@@ -640,7 +649,35 @@ static void test_icmp_zero_max_size_private_and_timeout_wrap(void) {
     db_engine_destroy(s.e);
 }
 
+static void test_udp_source_endpoint_callback(void) {
+    for (int family = 4; family <= 6; family += 2) {
+        state s = {0};
+        db_engine_config_t config = {.maximum_flows = 256, .mtu = 1280, .context = &s,
+            .emit_packet = emit, .open_flow = oldopen, .send_flow = send_tcp,
+            .close_flow = close_cb, .send_udp = send_udp, .close_udp = close_cb,
+            .open_udp_endpoint = open_endpoint};
+        s.e = db_engine_create(&config);
+        ASSERT_TRUE(s.e != NULL);
+        if (!s.e) continue;
+        db_engine_set_capabilities(s.e, DB_CAP_UDP4 | DB_CAP_UDP6);
+        uint8_t p[1500];
+        for (unsigned i = 0; i < 3; i++) {
+            size_t n = packet(p, family, 17, i == 2 ? 6001 : 6000, 3478 + i, NULL, 0);
+            db_engine_input_packet(s.e, p, n);
+            ASSERT_EQ_INT(i + 1, s.opens);
+            ASSERT_EQ_INT(i == 2 ? 6001 : 6000, s.source_port);
+            ASSERT_EQ_INT(3478 + i, s.destination_port);
+            ASSERT_MEM_EQ(p + (family == 4 ? 12 : 8), s.source_address, family == 4 ? 4 : 16);
+            ASSERT_EQ_INT(family, s.family);
+            ASSERT_EQ_INT(DB_ENGINE_OK, db_engine_on_udp_data(s.e, s.id, NULL, 0));
+            ASSERT_EQ_INT(i == 2 ? 6001 : 6000, r16(s.out + (family == 4 ? 22 : 42)));
+        }
+        db_engine_destroy(s.e);
+    }
+}
+
 void run_dualstack_tests(void) {
+    RUN(test_udp_source_endpoint_callback);
     RUN(test_combined_flow_limit_512_preserves_both_transports);
     RUN(test_ipv6_tcp_source_tuple_isolation_and_checksum_drop);
     RUN(test_nat64_supported_prefix_lengths_reject_embedded_private);

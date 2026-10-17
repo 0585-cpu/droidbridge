@@ -41,7 +41,7 @@ MESSAGE_TYPES = {
 
 EXTENSION_MESSAGE_TYPES = {
     "CAPABILITIES": 0x32, "CAPABILITIES_RESPONSE": 0x33,
-    "OPEN_UDP": 0x40, "OPEN_UDP_OK": 0x41, "OPEN_UDP_ERROR": 0x42, "UDP_CLOSE": 0x43,
+    "OPEN_UDP": 0x40, "OPEN_UDP_OK": 0x41, "OPEN_UDP_ERROR": 0x42, "UDP_CLOSE": 0x43, "OPEN_UDP_ASSOCIATION": 0x44,
     "ICMP_ECHO": 0x60, "ICMP_RESPONSE": 0x61, "ICMP_ERROR": 0x62,
 }
 
@@ -330,6 +330,8 @@ def build_extension_document() -> dict:
         ("open_udp_ok", "OPEN_UDP_OK", struct.pack("!IHH",7,120,1232)),
         ("open_udp_error", "OPEN_UDP_ERROR", struct.pack("!HH",14,0)),
         ("udp_close", "UDP_CLOSE", b""),
+        ("open_udp_association4", "OPEN_UDP_ASSOCIATION", bytes.fromhex("04000078")),
+        ("open_udp_association6", "OPEN_UDP_ASSOCIATION", bytes.fromhex("06000078")),
         ("icmp_echo4", "ICMP_ECHO", struct.pack("!BBHI",4,65,len(echo),7)+echo4+echo),
         ("icmp_echo6", "ICMP_ECHO", struct.pack("!BBHI",6,65,len(echo),8)+ipv6+echo),
         ("icmp_response", "ICMP_RESPONSE", struct.pack("!IBBHQ",7,4,64,len(echo),12345)+echo4+echo),
@@ -337,6 +339,10 @@ def build_extension_document() -> dict:
     ]
     frames = [("empty", b"", 0, 0), ("max_inbound", bytes(range(256))*4+bytes(range(208)), 1, 0xffffffff)]
     return {
+        "associations": [
+            {"name": "ipv4_outbound", "wire_hex": "000300041234567808ae0000c0000201000000000000000000000000616263"},
+            {"name": "ipv6_zero_inbound", "wire_hex": "00000106ffffffff01bb000020010db8000000000000000000000001"},
+        ],
         "schema": "dbp-extensions-v1", "header_size": HEADER_SIZE, "secret_hex": SECRET.hex(),
         "vectors": [vector(name, kind, payload, server_nonce=SERVER_NONCE) for name,kind,payload in entries],
         "datagrams": [{"name": name, "payload_hex": payload.hex(), "inbound": bool(flags), "sequence": sequence,

@@ -6,7 +6,7 @@
 #include "droidbridge_core.h"
 
 #define HARNESS_MAX_EMIT 128
-#define HARNESS_BUF 4096
+#define HARNESS_BUF (128 * 1024)
 
 typedef struct { uint8_t bytes[2048]; size_t len; } emitted_packet_t;
 
@@ -36,6 +36,7 @@ typedef struct {
 } harness_t;
 
 void harness_create(harness_t *h, uint16_t max_flows);
+void harness_create_at_time(harness_t *h, uint16_t max_flows, uint32_t now_ms);
 void harness_destroy(harness_t *h);
 void harness_ingest_syn(harness_t *h, uint16_t mac_port, const char *dst_ip, uint16_t dst_port);
 int harness_take_synack(harness_t *h, emitted_packet_t *out); /* finds SYN|ACK, updates mac_seq/ack */

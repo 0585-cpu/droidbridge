@@ -43,6 +43,12 @@ class ProtocolVectorTest(unittest.TestCase):
             self.assertEqual(packet[32:64], hmac.new(secret, packet[:32] + bytes(32) + packet[64:], hashlib.sha256).digest())
         caps = next(v for v in document["vectors"] if v["name"] == "capabilities_response")
         self.assertEqual(len(bytes.fromhex(caps["payload_hex"])), 61)
+        for frame in document["associations"]:
+            wire = bytes.fromhex(frame["wire_hex"])
+            self.assertEqual(struct.unpack("!H", wire[:2])[0], len(wire) - 28)
+            self.assertLessEqual(len(wire) - 28, 1232)
+            self.assertIn(wire[3], (4, 6))
+            self.assertEqual(wire[10:12], bytes(2))
         for frame in document["datagrams"]:
             wire = bytes.fromhex(frame["wire_hex"])
             self.assertEqual(struct.unpack("!H", wire[:2])[0], len(wire) - 8)
