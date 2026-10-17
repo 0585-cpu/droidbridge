@@ -34,14 +34,21 @@ public struct RelayControlClient: Sendable {
                 }
                 group.addTask {
                     try await Task.sleep(for: timeout)
-                    await box.close()
                     throw DroidBridgeError.relayTimedOut
                 }
                 defer { group.cancelAll() }
-                guard let result = try await group.next() else {
-                    throw DroidBridgeError.relayTimedOut
+                do {
+                    guard let result = try await group.next() else {
+                        throw DroidBridgeError.relayTimedOut
+                    }
+                    await box.close()
+                    return result
+                } catch {
+                    // Choose the initiating failure before cancellation wakes the
+                    // receive with EOF. Still close before joining the child tasks.
+                    await box.close()
+                    throw error
                 }
-                return result
             }
         } onCancel: {
             Task { await box.close() }
@@ -86,8 +93,7 @@ public struct RelayControlClient: Sendable {
         let remaining = try DbpCodec.payloadRemaining(header.type, prefix: [UInt8](prefix))
         let rest = remaining > 0 ? try await connection.receiveExactly(remaining) : Data()
         let payload = prefix + rest
-        let expected = DbpCodec.computeHMAC(secret: secret, header: header, payload: payload)
-        guard expected == hmac else { throw DroidBridgeError.relayAuthenticationFailed }
+        guard DbpCodec.verifyHMAC(secret: secret, header: header, payload: payload, hmac: hmac) else { throw DroidBridgeError.relayAuthenticationFailed }
         return (header, payload)
     }
 }

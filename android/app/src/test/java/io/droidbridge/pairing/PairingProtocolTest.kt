@@ -111,8 +111,7 @@ class PairingProtocolTest {
     // coordinator writes) and Job.join(), rather than virtual time. State assertions wait via
     // state.first { } so they never race the transition.
 
-    private class Harness(scope: CoroutineScope) {
-        val store = InMemoryPairingSecretStore()
+    private class Harness(scope: CoroutineScope, val store: io.droidbridge.security.PairingSecretStore = InMemoryPairingSecretStore()) {
         val channel = FakePairingChannel()
         val accepted = CompletableDeferred<PairingChannel>()
         val coordinator = PairingCoordinator(
@@ -174,6 +173,41 @@ class PairingProtocolTest {
         job.join()
 
         assertEquals(PairingUiState.Closed, coordinator.state.value)
+    }
+
+    @Test fun `forget cannot be undone by a pairing commit already in progress`() = coordinatorTest { scope ->
+        val delegate=InMemoryPairingSecretStore()
+        val entered=java.util.concurrent.CountDownLatch(1)
+        val release=java.util.concurrent.CountDownLatch(1)
+        val cleared=java.util.concurrent.CountDownLatch(1)
+        val store=object : io.droidbridge.security.PairingSecretStore by delegate {
+            override fun replace(peer: PairedPeer) {
+                entered.countDown()
+                check(release.await(3,java.util.concurrent.TimeUnit.SECONDS))
+                delegate.replace(peer)
+            }
+        }
+        val h=Harness(scope,store)
+        val job=h.coordinator.openWindow(5.seconds)
+        try {
+            h.connectAndHello()
+            val hello=h.androidHello()
+            val transcript=PairingTranscript.create(h.mac.hello,hello)
+            val mac=PairingProtocol.derive(h.mac.privateKey,PairingProtocol.decodePublicKey(hello.publicKey),transcript)
+            h.awaitApproval()
+            h.channel.inbound.send(PairingApproval(transcript.sessionId,true,PairingProtocol.approvalProof(mac.secret,"mac",transcript)).toJson().toByteArray())
+            h.coordinator.approve()
+            assertTrue(entered.await(2,java.util.concurrent.TimeUnit.SECONDS))
+            val forget=kotlin.concurrent.thread(isDaemon=true) {
+                h.coordinator.cancel(); store.clear(); cleared.countDown()
+            }
+            // Before the fix cancel returns while the gated persistence is still running.
+            cleared.await(150,java.util.concurrent.TimeUnit.MILLISECONDS)
+            release.countDown()
+            forget.join(2000)
+            job.join()
+            assertNull(store.load(),"A cancelled exchange must not restore a forgotten peer")
+        } finally { release.countDown(); h.coordinator.cancel() }
     }
 
     @Test

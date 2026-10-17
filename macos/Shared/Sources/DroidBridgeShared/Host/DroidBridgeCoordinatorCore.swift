@@ -1,14 +1,14 @@
 import Foundation
 
 /// Testable host state machine. Owns the fail-closed transitions; the UI adapter observes `state`.
-/// It removes only the ADB forwards it created and never deletes the Pairing Secret except on `forget`.
+/// It removes only its transport's local services and keeps the pairing secret until `forget`.
 public actor DroidBridgeCoordinatorCore {
     public private(set) var state: HostAppState
-    private let adb: any RelayAdb
+    private let adb: any RelayForwarding
     private let secretStore: any PairingSecretStore
     private var preparedSerial: String?
 
-    public init(state: HostAppState = .idle, adb: any RelayAdb, secretStore: any PairingSecretStore,
+    public init(state: HostAppState = .idle, adb: any RelayForwarding, secretStore: any PairingSecretStore,
                 preparedSerial: String? = nil) {
         self.state = state
         self.adb = adb

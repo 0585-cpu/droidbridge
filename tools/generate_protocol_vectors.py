@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
+import ipaddress
 import json
 import struct
 import sys
@@ -36,6 +37,12 @@ MESSAGE_TYPES = {
     "DNS_RESPONSE": 0x21,
     "HEALTH": 0x30,
     "HEALTH_RESPONSE": 0x31,
+}
+
+EXTENSION_MESSAGE_TYPES = {
+    "CAPABILITIES": 0x32, "CAPABILITIES_RESPONSE": 0x33,
+    "OPEN_UDP": 0x40, "OPEN_UDP_OK": 0x41, "OPEN_UDP_ERROR": 0x42, "UDP_CLOSE": 0x43, "OPEN_UDP_ASSOCIATION": 0x44,
+    "ICMP_ECHO": 0x60, "ICMP_RESPONSE": 0x61, "ICMP_ERROR": 0x62,
 }
 
 ERROR_CODES = {
@@ -132,7 +139,7 @@ def dns_response_packet(name: str, address: str, ttl: int = 300, txid: int = 0x1
 
 def vector(name: str, message: str, payload: bytes, *, server_nonce: int = 0,
            description: str = "", fields: dict | None = None) -> dict:
-    message_type = MESSAGE_TYPES[message]
+    message_type = (MESSAGE_TYPES | EXTENSION_MESSAGE_TYPES)[message]
     mac = compute_hmac(message_type, 0, CLIENT_NONCE, server_nonce, UNIX_TIME, payload)
     header = encode_header(message_type, 0, CLIENT_NONCE, server_nonce, UNIX_TIME, mac)
     return {
@@ -305,7 +312,48 @@ def render_c_header(document: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def build_extension_document() -> dict:
+    ipv6 = ipaddress.ip_address("2606:4700:4700::1111").packed
+    prefix = ipaddress.ip_address("64:ff9b::").packed
+    caps = struct.pack("!BQQBBBIIIHQB16s", 1, 0x27f, 42, 65, 65, 3, 131072, 262144, 65536, 7, 9, 96, prefix)
+    assert len(caps) == 59
+    v4 = open_tcp_ipv4("1.1.1.1", 443)
+    v6 = struct.pack("!BHB", 2, 443, 16) + ipv6
+    echo = b"droidbridge"
+    echo4 = bytes([1,1,1,1]) + bytes(12)
+    entries = [
+        ("capabilities", "CAPABILITIES", b""),
+        ("capabilities_response", "CAPABILITIES_RESPONSE", struct.pack("!H",len(caps))+caps),
+        ("open_tcp_ipv6", "OPEN_TCP", v6),
+        ("open_udp_ipv4", "OPEN_UDP", v4 + struct.pack("!H",120)),
+        ("open_udp_ipv6", "OPEN_UDP", v6 + struct.pack("!H",120)),
+        ("open_udp_ok", "OPEN_UDP_OK", struct.pack("!IHH",7,120,1232)),
+        ("open_udp_error", "OPEN_UDP_ERROR", struct.pack("!HH",14,0)),
+        ("udp_close", "UDP_CLOSE", b""),
+        ("open_udp_association4", "OPEN_UDP_ASSOCIATION", bytes.fromhex("04000078")),
+        ("open_udp_association6", "OPEN_UDP_ASSOCIATION", bytes.fromhex("06000078")),
+        ("icmp_echo4", "ICMP_ECHO", struct.pack("!BBHI",4,65,len(echo),7)+echo4+echo),
+        ("icmp_echo6", "ICMP_ECHO", struct.pack("!BBHI",6,65,len(echo),8)+ipv6+echo),
+        ("icmp_response", "ICMP_RESPONSE", struct.pack("!IBBHQ",7,4,64,len(echo),12345)+echo4+echo),
+        ("icmp_error", "ICMP_ERROR", struct.pack("!IH",7,14)),
+    ]
+    frames = [("empty", b"", 0, 0), ("max_inbound", bytes(range(256))*4+bytes(range(208)), 1, 0xffffffff)]
+    return {
+        "associations": [
+            {"name": "ipv4_outbound", "wire_hex": "000300041234567808ae0000c0000201000000000000000000000000616263"},
+            {"name": "ipv6_zero_inbound", "wire_hex": "00000106ffffffff01bb000020010db8000000000000000000000001"},
+        ],
+        "schema": "dbp-extensions-v1", "header_size": HEADER_SIZE, "secret_hex": SECRET.hex(),
+        "vectors": [vector(name, kind, payload, server_nonce=SERVER_NONCE) for name,kind,payload in entries],
+        "datagrams": [{"name": name, "payload_hex": payload.hex(), "inbound": bool(flags), "sequence": sequence,
+            "wire_hex": (struct.pack("!HBBI",len(payload),flags,0,sequence)+payload).hex()} for name,payload,flags,sequence in frames],
+    }
+
+
 OUTPUTS = {
+    ROOT / "protocol/test-vectors/dbp-extensions.json": lambda: render(build_extension_document()),
+    ROOT / "macos/Shared/Sources/DroidBridgeShared/Resources/dbp-extensions.json": lambda: render(build_extension_document()),
+    ROOT / "core/tests/dbp_extensions_generated.h": lambda: render_c_header(build_extension_document()).replace("DBP_VECTORS", "DBP_EXTENSION_VECTORS").replace("dbp_vector", "dbp_extension_vector"),
     VECTORS_PATH: lambda: render(build_document()),
     C_HEADER_PATH: lambda: render_c_header(build_document()),
     POLICY_PATH: lambda: render(build_policy_document()),

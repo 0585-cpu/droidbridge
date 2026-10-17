@@ -27,6 +27,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -57,6 +58,7 @@ private class FakeBackend(
     override suspend fun connect(destination: OpenDestination): Socket {
         connectCalls.incrementAndGet()
         val addr = when (destination) {
+            is OpenDestination.Ipv6 -> InetAddress.getByAddress(destination.address)
             is OpenDestination.Ipv4 -> InetAddress.getByAddress(destination.address)
             is OpenDestination.Domain -> InetAddress.getByName("93.184.216.34")
         }
@@ -69,8 +71,8 @@ private class FakeBackend(
 }
 
 /** Real DBP/1 client over loopback for the end-to-end test. */
-private class DbpTestClient(port: Int, private val secret: ByteArray = SECRET, private val nonce: Long = 0x51) : AutoCloseable {
-    private val socket = Socket("127.0.0.1", port)
+private class DbpTestClient(private val socket: Socket, private val secret: ByteArray = SECRET, private val nonce: Long = 0x51) : AutoCloseable {
+    constructor(port: Int, secret: ByteArray = SECRET, nonce: Long = 0x51) : this(Socket("127.0.0.1", port), secret, nonce)
     private val input = DataInputStream(socket.getInputStream())
     private val output = socket.getOutputStream()
     private var serverNonce = 0L
@@ -113,7 +115,7 @@ class RelayServerTest {
 
     private fun start(backend: RelayBackend, maxFlows: Int = 128): RelayServer {
         val auth = SessionAuthenticator({ SECRET }, NonceReplayCache(clock = FIXED), FIXED)
-        server = RelayServer(auth, backend, maximumFlows = maxFlows, bridge = StreamBridge(idleMs = 1000, graceMs = 300))
+        server = RelayServer(auth, backend, maximumFlows = maxFlows, bridge = StreamBridge(idleMs = 1000))
         server.start(port = 0)
         return server
     }
@@ -124,6 +126,41 @@ class RelayServerTest {
     fun `binds loopback only`() {
         start(FakeBackend())
         assertTrue(server.boundAddress!!.isLoopbackAddress)
+        assertEquals("127.0.0.1", server.boundAddress!!.hostAddress)
+    }
+
+    @Test
+    fun `restart immediately reuses its port after a completed health connection`() {
+        start(FakeBackend())
+        val port = server.port
+        DbpTestClient(port).use { client ->
+            client.hello()
+            assertEquals(DbpMessageType.HEALTH_RESPONSE,
+                client.request(DbpMessageType.HEALTH, ByteArray(0)).first.type)
+            // Observe the server's FIN before closing the peer: its local port enters TIME_WAIT.
+            assertTrue(client.readAll().isEmpty())
+        }
+        server.stop()
+        server.start(port)
+        DbpTestClient(port, nonce = 0x52).use { client ->
+            client.hello()
+            assertEquals(DbpMessageType.HEALTH_RESPONSE,
+                client.request(DbpMessageType.HEALTH, ByteArray(0)).first.type)
+        }
+    }
+
+    @Test
+    fun `another live listener cannot take the relay port`() {
+        start(FakeBackend())
+        val other = RelayServer(SessionAuthenticator({ SECRET }, NonceReplayCache(clock = FIXED), FIXED), FakeBackend())
+        try {
+            assertFailsWith<java.net.BindException> { other.start(server.port) }
+            DbpTestClient(server.port).use { client ->
+                client.hello()
+                assertEquals(DbpMessageType.HEALTH_RESPONSE,
+                    client.request(DbpMessageType.HEALTH, ByteArray(0)).first.type)
+            }
+        } finally { other.stop() }
     }
 
     @Test
@@ -235,6 +272,36 @@ class RelayServerTest {
     }
 
     @Test
+    fun `flow completion can race with cancellation without breaking disconnect`() = runBlocking {
+        val backend = object : RelayBackend {
+            override suspend fun connect(destination: OpenDestination): Socket = FakeDuplexSocket(ByteArray(0))
+            override suspend fun resolveDns(queryPacket: ByteArray): ByteArray = error("unused")
+            override fun carrierName(): String? = "MockCarrier"
+            override fun cellularReady(): Boolean = true
+        }
+        withTimeout(10.seconds) {
+            start(backend, maxFlows = 1)
+            withContext(Dispatchers.IO) {
+                repeat(100) { index ->
+                    DbpTestClient(server.port, nonce = 1000L + index).use { client ->
+                        client.hello()
+                        val (opened, _) = client.request(
+                            DbpMessageType.OPEN_TCP,
+                            DbpCodec.encodeOpenTcp(OpenDestination.Domain("example.com", 443)),
+                        )
+                        assertEquals(DbpMessageType.OPEN_OK, opened.type)
+                        server.metrics.snapshot.first { it.activeFlows == 1 }
+                        client.close()
+                        // The completed bridge removes sockets while disconnect iterates them.
+                        server.cancelActiveFlows()
+                        server.metrics.snapshot.first { it.activeFlows == 0 }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     fun `cancelling active flows closes their client sockets`() {
         val backend = object : RelayBackend {
             override suspend fun connect(destination: OpenDestination): Socket = FakeDuplexSocket(ByteArray(0))
@@ -293,5 +360,142 @@ class RelayServerTest {
 
     companion object {
         private val FIXED = EpochClock { 1_700_000_000 }
+    }
+}
+
+/** USB accessory relay streams reach RelayServer in memory (no loopback hop) and behave the same. */
+class AoaInMemoryRelayTest {
+    private val clock = EpochClock { 1_700_000_000 }
+
+    private fun dbp(type: DbpMessageType, serverNonce: Long, payload: ByteArray = ByteArray(0)): ByteArray {
+        val header = DbpHeader(type, 0, 0x61, serverNonce, 1_700_000_000, ByteArray(32))
+        return DbpCodec.encodeHeader(header, DbpHmac.compute(SECRET, header, payload)) + payload
+    }
+
+    @Test fun `HELLO and HEALTH run over an in-memory AOA stream and both sides finish`() {
+        val server = RelayServer(SessionAuthenticator({ SECRET }, NonceReplayCache(clock = clock), clock), FakeBackend(),
+            bridge = StreamBridge(idleMs = 1000))
+        server.start(port = 0)
+        java.net.ServerSocket(0).use { usb -> Socket("127.0.0.1", usb.localPort).use { host ->
+            host.soTimeout = 5000
+            val accessory = usb.accept()
+            val bridge = io.droidbridge.usb.AoaAccessoryBridge(accessory.getInputStream(), accessory.getOutputStream(),
+                closeTransport = { accessory.close() }, relayAcceptor = server::accept)
+            bridge.start()
+            val input = java.io.BufferedInputStream(host.getInputStream())
+            fun send(frame: io.droidbridge.usb.AoaFrame) = host.getOutputStream().write(frame.encode())
+            fun next() = io.droidbridge.usb.AoaFrame.read(input)!!
+            val received = java.io.ByteArrayOutputStream()
+            fun dbpReply(): DbpHeader {
+                while (received.size() < 64) {
+                    val frame = next()
+                    if (frame.type == io.droidbridge.usb.AoaFrame.DATA) received.write(frame.payload)
+                }
+                val bytes = received.toByteArray()
+                val header = DbpCodec.decodeHeader(bytes.copyOf(64))
+                received.reset(); received.write(bytes, 64, bytes.size - 64)
+                return header
+            }
+            try {
+                send(io.droidbridge.usb.AoaFrame(io.droidbridge.usb.AoaFrame.RESET, 0, payload = ByteArray(16)))
+                assertEquals(io.droidbridge.usb.AoaFrame.RESET_OK, next().type)
+                send(io.droidbridge.usb.AoaFrame(io.droidbridge.usb.AoaFrame.OPEN, 1, io.droidbridge.usb.AoaFrame.RELAY))
+                assertEquals(io.droidbridge.usb.AoaFrame.OPEN_OK, next().type)
+                send(io.droidbridge.usb.AoaFrame(io.droidbridge.usb.AoaFrame.DATA, 1, payload = dbp(DbpMessageType.HELLO, 0)))
+                val hello = dbpReply()
+                assertEquals(DbpMessageType.HELLO_OK, hello.type)
+                send(io.droidbridge.usb.AoaFrame(io.droidbridge.usb.AoaFrame.DATA, 1, payload = dbp(DbpMessageType.HEALTH, hello.serverNonce)))
+                assertEquals(DbpMessageType.HEALTH_RESPONSE, dbpReply().type)
+                // The relay closes after one request: its FIN arrives, then ours finishes the stream.
+                var sawFin = false
+                while (!sawFin) sawFin = next().type == io.droidbridge.usb.AoaFrame.FIN
+                send(io.droidbridge.usb.AoaFrame(io.droidbridge.usb.AoaFrame.FIN, 1))
+                send(io.droidbridge.usb.AoaFrame(io.droidbridge.usb.AoaFrame.PING, 0))
+                var pong = false
+                while (!pong) pong = next().type == io.droidbridge.usb.AoaFrame.PONG
+            } finally { bridge.close(); server.stop() }
+        } }
+    }
+
+    @Test fun `a stopped relay refuses the stream with CLOSE`() {
+        val server = RelayServer(SessionAuthenticator({ SECRET }, NonceReplayCache(clock = clock), clock), FakeBackend())
+        java.net.ServerSocket(0).use { usb -> Socket("127.0.0.1", usb.localPort).use { host ->
+            host.soTimeout = 5000
+            val accessory = usb.accept()
+            val bridge = io.droidbridge.usb.AoaAccessoryBridge(accessory.getInputStream(), accessory.getOutputStream(),
+                closeTransport = { accessory.close() }, relayAcceptor = server::accept)
+            bridge.start()
+            val input = java.io.BufferedInputStream(host.getInputStream())
+            try {
+                host.getOutputStream().write(io.droidbridge.usb.AoaFrame(io.droidbridge.usb.AoaFrame.RESET, 0, payload = ByteArray(16)).encode())
+                assertEquals(io.droidbridge.usb.AoaFrame.RESET_OK, io.droidbridge.usb.AoaFrame.read(input)!!.type)
+                host.getOutputStream().write(io.droidbridge.usb.AoaFrame(io.droidbridge.usb.AoaFrame.OPEN, 1, io.droidbridge.usb.AoaFrame.RELAY).encode())
+                assertEquals(io.droidbridge.usb.AoaFrame.CLOSE, io.droidbridge.usb.AoaFrame.read(input)!!.type)
+            } finally { bridge.close() }
+        } }
+    }
+
+    /** The Mac end of AOA stream 1, built from the production pipe over the raw AOA wire. */
+    private fun macStream(host: Socket): Socket {
+        val out = host.getOutputStream()
+        val mac = io.droidbridge.usb.AoaPipeSocket(1, { synchronized(out) { out.write(it) } }) {}
+        val opened = java.util.concurrent.CountDownLatch(1)
+        val ready = java.util.concurrent.CountDownLatch(1)
+        val input = java.io.BufferedInputStream(host.getInputStream())
+        Thread {
+            runCatching {
+                while (true) {
+                    val f = io.droidbridge.usb.AoaFrame.read(input) ?: break
+                    when (f.type) {
+                        io.droidbridge.usb.AoaFrame.RESET_OK -> ready.countDown()
+                        io.droidbridge.usb.AoaFrame.OPEN_OK -> opened.countDown()
+                        io.droidbridge.usb.AoaFrame.DATA -> mac.deliver(f.payload)
+                        io.droidbridge.usb.AoaFrame.WINDOW -> mac.credit(f.credit())
+                        io.droidbridge.usb.AoaFrame.FIN -> mac.remoteFinished()
+                        io.droidbridge.usb.AoaFrame.CLOSE -> mac.abort()
+                    }
+                }
+            }
+        }.apply { isDaemon = true; start() }
+        // Like the Mac mux: no stream opens before the RESET_OK barrier.
+        synchronized(out) { out.write(io.droidbridge.usb.AoaFrame(io.droidbridge.usb.AoaFrame.RESET, 0, payload = ByteArray(16)).encode()) }
+        assertTrue(ready.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        synchronized(out) { out.write(io.droidbridge.usb.AoaFrame(io.droidbridge.usb.AoaFrame.OPEN, 1, io.droidbridge.usb.AoaFrame.RELAY).encode()) }
+        assertTrue(opened.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        return mac.apply { soTimeout = 5000 }
+    }
+
+    @Test fun `TCP over an in-memory AOA stream moves 256 KiB each way and propagates half close`() {
+        java.net.ServerSocket(0).use { echo ->
+            Thread { echo.accept().use { s -> s.getInputStream().copyTo(s.getOutputStream()); s.shutdownOutput() } }
+                .apply { isDaemon = true; start() }
+            val backend = object : RelayBackend {
+                override suspend fun connect(destination: OpenDestination): Socket = Socket("127.0.0.1", echo.localPort)
+                override suspend fun resolveDns(queryPacket: ByteArray): ByteArray = error("unexpected DNS")
+                override fun carrierName(): String? = "test"
+                override fun cellularReady(): Boolean = true
+            }
+            val server = RelayServer(SessionAuthenticator({ SECRET }, NonceReplayCache(clock = clock), clock), backend)
+            server.start(port = 0)
+            java.net.ServerSocket(0).use { usb -> Socket("127.0.0.1", usb.localPort).use { host ->
+                val accessory = usb.accept()
+                val bridge = io.droidbridge.usb.AoaAccessoryBridge(accessory.getInputStream(), accessory.getOutputStream(),
+                    closeTransport = { accessory.close() }, relayAcceptor = server::accept)
+                bridge.start()
+                try {
+                    DbpTestClient(macStream(host), nonce = 0x62).use { client ->
+                        client.hello()
+                        val (header, _) = client.request(DbpMessageType.OPEN_TCP, DbpCodec.encodeOpenTcp(OpenDestination.Domain("example.com", 443)))
+                        assertEquals(DbpMessageType.OPEN_OK, header.type)
+                        val body = ByteArray(256 * 1024) { (it * 31).toByte() }
+                        val reader = java.util.concurrent.Executors.newSingleThreadExecutor().submit<ByteArray> { client.readAll() }
+                        client.writeRaw(body)
+                        client.shutdownOutput()
+                        assertContentEquals(body, reader.get(10, java.util.concurrent.TimeUnit.SECONDS),
+                            "every byte returns and the echo's FIN ends the stream")
+                    }
+                } finally { bridge.close(); server.stop() }
+            } }
+        }
     }
 }

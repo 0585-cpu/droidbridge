@@ -53,9 +53,15 @@ object DbpCodec {
 
     /** Bytes to read after the header before the payload length is known. */
     fun payloadPrefixLength(type: DbpMessageType): Int = when (type) {
-        DbpMessageType.HELLO, DbpMessageType.HELLO_OK, DbpMessageType.OPEN_OK, DbpMessageType.HEALTH -> 0
+        DbpMessageType.HELLO, DbpMessageType.HELLO_OK, DbpMessageType.OPEN_OK, DbpMessageType.HEALTH, DbpMessageType.CAPABILITIES, DbpMessageType.UDP_CLOSE -> 0
         DbpMessageType.OPEN_ERROR -> 1
-        DbpMessageType.OPEN_TCP -> 4
+        DbpMessageType.OPEN_TCP, DbpMessageType.OPEN_UDP -> 4
+        DbpMessageType.OPEN_UDP_OK -> 8
+        DbpMessageType.OPEN_UDP_ERROR, DbpMessageType.OPEN_UDP_ASSOCIATION -> 4
+        DbpMessageType.CAPABILITIES_RESPONSE -> 2
+        DbpMessageType.ICMP_ECHO -> 24
+        DbpMessageType.ICMP_ECHO_RESPONSE -> 32
+        DbpMessageType.ICMP_ECHO_ERROR -> 6
         DbpMessageType.DNS_QUERY, DbpMessageType.DNS_RESPONSE -> 2
         DbpMessageType.HEALTH_RESPONSE -> HEALTH_PREFIX
     }
@@ -64,14 +70,16 @@ object DbpCodec {
     fun payloadRemaining(type: DbpMessageType, prefix: ByteArray): Int {
         if (prefix.size != payloadPrefixLength(type)) throw DbpProtocolException("bad prefix")
         return when (type) {
-            DbpMessageType.OPEN_TCP -> {
+            DbpMessageType.OPEN_TCP, DbpMessageType.OPEN_UDP -> {
                 val addressType = prefix[0].toInt() and 0xFF
                 val length = prefix[3].toInt() and 0xFF
-                when (addressType) {
+                val addressLength = when (addressType) {
                     1 -> if (length == 4) 4 else throw DbpProtocolException("ipv4 length")
-                    3 -> if (length in 1..MAX_DOMAIN_LENGTH) length else throw DbpProtocolException("domain length")
+                    2 -> if (length == 16) 16 else throw DbpProtocolException("ipv6 length")
+                    3 -> if (type == DbpMessageType.OPEN_TCP && length in 1..MAX_DOMAIN_LENGTH) length else throw DbpProtocolException("domain length")
                     else -> throw DbpProtocolException("address type")
                 }
+                addressLength + if (type == DbpMessageType.OPEN_UDP) 2 else 0
             }
             DbpMessageType.DNS_QUERY, DbpMessageType.DNS_RESPONSE -> {
                 val length = ((prefix[0].toInt() and 0xFF) shl 8) or (prefix[1].toInt() and 0xFF)
@@ -82,6 +90,17 @@ object DbpCodec {
                 val length = prefix[21].toInt() and 0xFF
                 if (length > MAX_CARRIER) throw DbpProtocolException("carrier length")
                 length
+            }
+            DbpMessageType.CAPABILITIES_RESPONSE -> {
+                val size = ((prefix[0].toInt() and 255) shl 8) or (prefix[1].toInt() and 255)
+                if (size !in 1..256) throw DbpProtocolException("capabilities size")
+                size
+            }
+            DbpMessageType.ICMP_ECHO, DbpMessageType.ICMP_ECHO_RESPONSE -> {
+                val offset = if (type == DbpMessageType.ICMP_ECHO) 2 else 6
+                val size = ((prefix[offset].toInt() and 255) shl 8) or (prefix[offset+1].toInt() and 255)
+                if (size > 1200) throw DbpProtocolException("ICMP size")
+                size
             }
             else -> 0
         }
@@ -98,11 +117,16 @@ object DbpCodec {
         val remaining = payloadRemaining(type, payload.copyOf(prefixLength))
         if (payload.size != prefixLength + remaining) throw DbpProtocolException("payload length mismatch")
         return when (type) {
-            DbpMessageType.HELLO, DbpMessageType.HELLO_OK, DbpMessageType.OPEN_OK, DbpMessageType.HEALTH -> DbpPayload.Empty
+            DbpMessageType.HELLO, DbpMessageType.HELLO_OK, DbpMessageType.OPEN_OK, DbpMessageType.HEALTH, DbpMessageType.CAPABILITIES, DbpMessageType.UDP_CLOSE -> DbpPayload.Empty
             DbpMessageType.OPEN_ERROR -> DbpPayload.Error(DbpErrorCode.fromCode(payload[0].toInt() and 0xFF))
             DbpMessageType.OPEN_TCP -> decodeOpenTcp(payload)
             DbpMessageType.DNS_QUERY, DbpMessageType.DNS_RESPONSE -> DbpPayload.Dns(payload.copyOfRange(2, payload.size))
             DbpMessageType.HEALTH_RESPONSE -> decodeHealth(payload)
+            DbpMessageType.CAPABILITIES_RESPONSE -> ExtensionCodec.decodeCapabilities(payload)
+            DbpMessageType.OPEN_UDP -> ExtensionCodec.decodeUdpOpen(payload)
+            DbpMessageType.OPEN_UDP_ASSOCIATION -> ExtensionCodec.decodeUdpAssociationOpen(payload)
+            DbpMessageType.ICMP_ECHO -> ExtensionCodec.decodeIcmpRequest(payload)
+            else -> DbpPayload.Extension(payload)
         }
     }
 
@@ -115,6 +139,7 @@ object DbpCodec {
         val body = payload.copyOfRange(4, payload.size)
         return when (payload[0].toInt()) {
             1 -> OpenDestination.Ipv4(body, port)
+            2 -> OpenDestination.Ipv6(body, port)
             else -> OpenDestination.Domain(String(body, StandardCharsets.US_ASCII), port)
         }
     }
@@ -123,6 +148,7 @@ object DbpCodec {
         if (destination.port !in 1..65535) throw DbpProtocolException("port")
         val (type, body) = when (destination) {
             is OpenDestination.Ipv4 -> 1 to destination.address
+            is OpenDestination.Ipv6 -> 2 to destination.address
             is OpenDestination.Domain -> 3 to destination.host.toByteArray(StandardCharsets.US_ASCII)
                 .also { if (it.size !in 1..MAX_DOMAIN_LENGTH) throw DbpProtocolException("domain length") }
         }

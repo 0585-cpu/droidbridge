@@ -22,9 +22,9 @@ class DbpCodecTest {
         assertEquals(64L, document["header_size"])
         assertEquals(DbpCodec.HEADER_SIZE, 64)
         val types = document["message_types"] as Map<*, *>
-        for (t in DbpMessageType.entries) assertEquals((types[t.name] as Long).toInt(), t.code, t.name)
+        for ((name, code) in types) assertEquals((code as Long).toInt(), DbpMessageType.valueOf(name as String).code, name)
         val errors = document["error_codes"] as Map<*, *>
-        for (e in DbpErrorCode.entries) assertEquals((errors[e.name] as Long).toInt(), e.code, e.name)
+        for ((name, code) in errors) assertEquals((code as Long).toInt(), DbpErrorCode.valueOf(name as String).code, name)
         assertEquals(10, vectors.size)
     }
 

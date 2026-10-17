@@ -1,5 +1,8 @@
 # DroidBridge Full-Tunnel 설계 명세
 
+> 2026-09-23 전송 변경: [AOA 설계](../specs/2026-09-23-droidbridge-aoa-design.md)가 이 문서의 ADB 제품 경로를 대체한다.
+> **2026-09-23 보충:** 현재 helper 구조 및 향후 UDP·TTL·트래픽 프로필 범위는 [설계 보충](2026-09-23-droidbridge-udp-traffic-profile-design.md)을 함께 읽는다. 아래 TTL/Hop Limit 제외 조건은 향후 선택형 프로필에 대해 변경되었다. 기존 B1 기본 프로필 시험 기준은 유지한다.
+
 - 문서 상태: 설계 승인 후 작성된 구현 전 명세
 - 작성일: 2026-09-21
 - 대상 릴리스: B1 MVP

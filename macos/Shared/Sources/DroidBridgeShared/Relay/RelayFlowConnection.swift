@@ -4,8 +4,11 @@ import Foundation
 public protocol RelayFlowDelegate: AnyObject, Sendable {
     func relayFlowOpened(_ flowId: UInt32)
     func relayFlowFailed(_ flowId: UInt32, error: DbpErrorCode)
-    func relayFlowReceived(_ flowId: UInt32, data: Data)
+    /// Returns only once this chunk is consumed; false ends a retired/failed flow.
+    func relayFlowReceived(_ flowId: UInt32, data: Data) async -> Bool
     func relayFlowWritable(_ flowId: UInt32)
+    /// Remote FIN: finish delivery to the client without closing its upload direction.
+    func relayFlowReadEOF(_ flowId: UInt32)
     func relayFlowClosed(_ flowId: UInt32, isError: Bool)
 }
 
@@ -27,6 +30,10 @@ public actor RelayFlowConnection {
     private let outbound: OutboundBuffer
     private var sending = false
     private var opened = false
+    private var closed = false
+    private var readFinished = false
+    private var writeFinished = false
+    private var receiveTask: Task<Void, Never>?
     private let now: @Sendable () -> UInt64
 
     /// Lock-protected bounded FIFO so the C engine's send callback can enqueue synchronously.
@@ -34,16 +41,19 @@ public actor RelayFlowConnection {
         private let lock = NSLock()
         private var data = Data()
         private let limit: Int
+        private var sealed = false
         init(limit: Int) { self.limit = limit }
         func append(_ chunk: Data) -> Bool {
             lock.withLock {
-                guard data.count + chunk.count <= limit else { return false }
+                guard !sealed, data.count + chunk.count <= limit else { return false }
                 data.append(chunk); return true
             }
         }
         func takeAll() -> Data { lock.withLock { let d = data; data = Data(); return d } }
         var count: Int { lock.withLock { data.count } }
         var isEmpty: Bool { lock.withLock { data.isEmpty } }
+        func finish() { lock.withLock { sealed = true } }
+        var isFinished: Bool { lock.withLock { sealed && data.isEmpty } }
     }
 
     public init(flowId: UInt32, destination: OpenDestination, secret: Data,
@@ -63,6 +73,7 @@ public actor RelayFlowConnection {
     public nonisolated var bufferedOutboundBytes: Int { outbound.count }
 
     public func start() async throws {
+        guard !closed else { throw CancellationError() }
         try await transport.start()
         // HELLO -> HELLO_OK
         try await sendControl(.hello, payload: Data())
@@ -72,15 +83,15 @@ public actor RelayFlowConnection {
         }
         serverNonce = helloOk.serverNonce
         // OPEN_TCP -> OPEN_OK | OPEN_ERROR
-        try await sendControl(.openTcp, payload: DbpCodec.encodeOpenTcp(
-            host: destination.host, port: destination.port))
+        try await sendControl(.openTcp, payload: DbpCodec.encodeOpenTcp(destination: destination))
         let (open, openPayload) = try await readControl()
+        guard !closed, open.clientNonce == clientNonce, open.serverNonce == serverNonce else { throw DroidBridgeError.relayAuthenticationFailed }
         switch open.type {
         case .openOk:
             opened = true
             delegate?.relayFlowOpened(flowId)
             pumpSend()
-            Task { await self.receiveLoop() }
+            receiveTask = Task { await self.receiveLoop() }
         case .openError:
             let code = DbpErrorCode(rawValue: openPayload.first ?? 9) ?? .internalError
             delegate?.relayFlowFailed(flowId, error: code)
@@ -97,7 +108,20 @@ public actor RelayFlowConnection {
         return accepted
     }
 
-    public func close() async { await transport.cancel() }
+    public func close() async {
+        guard !closed else { return }
+        closed = true; opened = false
+        receiveTask?.cancel(); receiveTask = nil
+        outbound.finish()
+        _ = outbound.takeAll()
+        await transport.cancel()
+    }
+
+    /// Called synchronously after the engine has drained all request bytes into this FIFO.
+    public nonisolated func finishSending() {
+        outbound.finish()
+        Task { await self.pumpSend() }
+    }
 
     // MARK: - internals
 
@@ -114,16 +138,27 @@ public actor RelayFlowConnection {
         let remaining = try DbpCodec.payloadRemaining(header.type, prefix: [UInt8](prefix))
         let rest = remaining > 0 ? try await transport.receiveExactly(remaining) : Data()
         let payload = prefix + rest
-        guard DbpCodec.computeHMAC(secret: secret, header: header, payload: payload) == hmac else {
+        guard DbpCodec.verifyHMAC(secret: secret, header: header, payload: payload, hmac: hmac) else {
             throw DroidBridgeError.relayAuthenticationFailed
         }
         return (header, payload)
     }
 
     private func pumpSend() {
-        guard opened, !sending, !outbound.isEmpty else { return }
-        sending = true
+        guard opened, !closed, !sending else { return }
         let chunk = outbound.takeAll()
+        if chunk.isEmpty {
+            guard outbound.isFinished, !writeFinished else { return }
+            sending = true
+            Task {
+                do {
+                    try await transport.finishSending()
+                    await self.finishSendCompleted()
+                } catch { await self.failClosed() }
+            }
+            return
+        }
+        sending = true
         Task {
             do {
                 try await transport.send(chunk)
@@ -135,22 +170,45 @@ public actor RelayFlowConnection {
     }
 
     private func sendCompleted() {
+        guard !closed else { return }
         sending = false
         delegate?.relayFlowWritable(flowId)
-        if !outbound.isEmpty { pumpSend() }
+        pumpSend()
     }
 
-    private func failClosed() {
+    private func finishSendCompleted() async {
+        guard !closed else { return }
+        sending = false; writeFinished = true
+        await finishIfComplete()
+    }
+
+    private func finishIfComplete() async {
+        guard !closed, readFinished, writeFinished else { return }
+        await close()
+        delegate?.relayFlowClosed(flowId, isError: false)
+    }
+
+    private func failClosed() async {
+        guard !closed else { return }; await close()
         delegate?.relayFlowClosed(flowId, isError: true)
     }
 
     private func receiveLoop() async {
-        while true {
+        while !closed {
             let data: Data
             do { data = try await transport.receive(maxLength: Self.receiveChunk) }
-            catch { delegate?.relayFlowClosed(flowId, isError: true); return }
-            if data.isEmpty { delegate?.relayFlowClosed(flowId, isError: false); return } // clean EOF
-            delegate?.relayFlowReceived(flowId, data: data)
+            catch { await failClosed(); return }
+            if data.isEmpty {
+                guard !closed else { return }
+                readFinished = true
+                delegate?.relayFlowReadEOF(flowId)
+                await finishIfComplete()
+                return
+            }
+            guard !closed else { return }
+            guard let delegate, await delegate.relayFlowReceived(flowId, data: data) else {
+                await failClosed(); return
+            }
         }
     }
 }

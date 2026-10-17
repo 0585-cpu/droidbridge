@@ -72,7 +72,7 @@ class PairingCoordinator(
     fun approve() { decision?.complete(true) }
     fun reject() { decision?.complete(false) }
 
-    fun cancel() {
+    @Synchronized fun cancel() {
         job?.cancel()
         job = null
         _state.value = PairingUiState.Closed
@@ -108,10 +108,16 @@ class PairingCoordinator(
                 throw PairingException("mac did not approve")
             }
 
-            store.replace(PairedPeer(macHello.peerId, macHello.displayName, result.secret.copyOf()))
+            val context = currentCoroutineContext()
+            synchronized(this) {
+                // Forget clears storage after cancel returns. A commit that already owns this
+                // monitor finishes first; a cancelled worker can never persist afterwards.
+                context.ensureActive()
+                store.replace(PairedPeer(macHello.peerId, macHello.displayName, result.secret.copyOf()))
+            }
             val proof = PairingProtocol.approvalProof(result.secret, "android", transcript)
             PairingFrames.writeJson(channel, PairingApproval(transcript.sessionId, true, proof).toJson())
-            _state.value = PairingUiState.Completed(macHello.displayName)
+            synchronized(this) { context.ensureActive(); _state.value = PairingUiState.Completed(macHello.displayName) }
         } finally {
             result.secret.fill(0)
         }

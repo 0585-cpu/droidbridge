@@ -5,7 +5,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 include(CTest)
 add_library(droidbridge_protocol STATIC src/dbp_codec.c src/destination_policy.c
-    src/ipv4_packet.c src/tcp_packet.c src/checksum.c src/flow_table.c src/tcp_rewrite.c
+    src/ip_packet.c src/ipv4_packet.c src/tcp_packet.c src/checksum.c src/flow_table.c src/tcp_rewrite.c
     src/dns_bridge.c src/dns_packet.c)
 target_include_directories(droidbridge_protocol PUBLIC include)
 if(BUILD_TESTING)
@@ -31,7 +31,7 @@ endif()
 option(DROIDBRIDGE_BUILD_FUZZERS "Build libFuzzer targets (requires an LLVM clang with libFuzzer)" OFF)
 if(DROIDBRIDGE_BUILD_FUZZERS)
   set(fuzz_flags -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
-  foreach(target fuzz_dbp_header fuzz_open_tcp fuzz_ipv4_tcp fuzz_dns_packet)
+  foreach(target fuzz_dbp_header fuzz_open_tcp fuzz_ipv4_tcp fuzz_dns_packet fuzz_ip_packet)
     add_executable(${target} fuzz/${target}.c)
     target_link_libraries(${target} PRIVATE droidbridge_protocol)
     target_compile_options(${target} PRIVATE ${fuzz_flags})

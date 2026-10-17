@@ -1,5 +1,6 @@
 import DroidBridgeShared
 import Foundation
+import OSLog
 
 private struct HelperDbpConnection: DbpConnection {
     let transport: any RelayTransport
@@ -36,11 +37,17 @@ enum HelperServiceError: LocalizedError {
 
 /// Privileged XPC endpoint that owns fail-closed tunnel lifecycle state.
 final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperProtocol, @unchecked Sendable {
+    private let healthLogger = Logger(subsystem: "io.droidbridge", category: "RelayHealth")
     let peerRequirement: String
     private let stateLock = NSLock()
     private let pfController: PfController
     private let networkService: NetworkServicePublisher
     private let recoveryStore: HelperRecoveryStateStore
+    private let stopCoordinator: HelperStopCoordinator
+    private let recoveryVerifier: NetworkRecoveryVerifier
+    private let healthProbe: @Sendable (TunnelRuntimeConfiguration, Data) async throws -> RelayHealth
+    private let healthSleep: @Sendable (Duration) async throws -> Void
+    private var rebuildController: (() -> TunnelController)?
     private var utun: UtunDevice?
     private var tunnelController: TunnelController?
     private var healthTask: Task<Void, Never>?
@@ -56,7 +63,11 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
         bundleID: String = "io.droidbridge.macos",
         pfController: PfController = PfController(),
         networkService: NetworkServicePublisher = NetworkServicePublisher(),
-        recoveryStore: HelperRecoveryStateStore = HelperRecoveryStateStore()
+        recoveryStore: HelperRecoveryStateStore = HelperRecoveryStateStore(),
+        stopCoordinator: HelperStopCoordinator = HelperStopCoordinator(),
+        recoveryVerifier: NetworkRecoveryVerifier = NetworkRecoveryVerifier(),
+        healthProbe: @escaping @Sendable (TunnelRuntimeConfiguration, Data) async throws -> RelayHealth = HelperService.probeHealth,
+        healthSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         peerRequirement = HelperCodeRequirement.string(
             teamID: teamID ?? "UNSIGNEDBUILD",
@@ -65,6 +76,10 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
         self.pfController = pfController
         self.networkService = networkService
         self.recoveryStore = recoveryStore
+        self.stopCoordinator = stopCoordinator
+        self.recoveryVerifier = recoveryVerifier
+        self.healthProbe = healthProbe
+        self.healthSleep = healthSleep
         super.init()
     }
 
@@ -127,6 +142,7 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
         var device: UtunDevice?
         var controller: TunnelController?
         do {
+            guard !stopCoordinator.isPending else { throw HelperServiceError.recoveryRequired }
             guard utun == nil, tunnelController == nil else {
                 throw HelperServiceError.alreadyRunning
             }
@@ -185,6 +201,9 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
 
             utun = openedDevice
             tunnelController = runningController
+            rebuildController = {
+                Self.makeTunnelController(device: openedDevice, configuration: configuration, secret: secret)
+            }
             healthConfiguration = configuration
             healthSecret = secret
             runtimeStatus = .running
@@ -223,11 +242,17 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
     func reconnectTunnel(reply: @escaping (Bool, String?) -> Void) {
         stateLock.lock()
         defer { stateLock.unlock() }
-        guard tunnelController != nil,
+        guard !stopCoordinator.isPending, tunnelController != nil,
               let configuration = healthConfiguration,
               let secret = healthSecret
         else {
             reply(false, "there is no active tunnel to reconnect")
+            return
+        }
+        // Health may have recovered after the GUI read a blocked status. Keep the
+        // live engine and monitor; marking it reconnecting would start a second engine.
+        guard runtimeStatus != .running else {
+            reply(true, nil)
             return
         }
         runtimeStatus = .reconnecting
@@ -240,7 +265,8 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
     }
 
     func status(reply: @escaping (Data) -> Void) {
-        stateLock.lock()
+        // Never queue more status readers behind a stalled lifecycle operation.
+        guard stateLock.try() else { reply(Data()); return }
         let cellularReady = runtimeStatus == .running
         let snapshot = TunnelMetricsSnapshot(
             activeFlows: tunnelController?.activeFlowCount ?? 0,
@@ -250,74 +276,72 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
             cellularAvailable: cellularReady,
             tunnelActive: utun != nil || tunnelController != nil
                 || networkService.isPublished || pfController.isEnabled
-                || recoveryStore.hasPersistedState || recoveryAttentionRequired,
-            runtimeStatus: runtimeStatus
+                || recoveryStore.hasPersistedState || recoveryAttentionRequired || stopCoordinator.isPending,
+            runtimeStatus: runtimeStatus,
+            activeUDP: tunnelController?.activeUDPCount ?? 0,
+            udpDrops: tunnelController?.udpDrops ?? 0,
+            capabilities: tunnelController?.capabilities
         )
         stateLock.unlock()
         reply((try? JSONEncoder.droidBridge.encode(snapshot)) ?? Data())
     }
 
     func stopTunnel(reply: @escaping (Bool) -> Void) {
+        // This must precede stateLock: a health callback may already hold it while
+        // synchronously stopping a frozen engine. The watchdog has its own queue.
+        stopCoordinator.request(work: { [self] in try stopAndRestore() }, reply: reply)
+    }
+
+    func resumePendingStop() {
+        do { try stopCoordinator.resumeIfRequested { try stopAndRestore() } }
+        catch {
+            recoveryAttentionRequired = true
+            runtimeStatus = .teardownFailed
+            NSLog("DroidBridge pending Stop needs retry: %@", error.localizedDescription)
+        }
+    }
+
+    private func stopAndRestore() throws {
         stateLock.lock()
         defer { stateLock.unlock() }
-
         healthGeneration &+= 1
         healthTask?.cancel()
         healthTask = nil
-        tunnelController?.stop()
+        rebuildController = nil
         do {
-            if recoveryStore.hasPersistedState {
-                try restorePersistedStateLocked()
-            } else {
-                // Defensive fallback for an in-memory transaction whose journal
-                // could not be created. The service still precedes PF teardown.
-                try networkService.withdraw()
-                try pfController.disable()
-            }
+            tunnelController?.stop()
+            let state = try recoveryStore.load()
+            // An old journal's utun index may have been reused by another VPN.
+            // On restart, service ID and virtual gateway/DNS identify our state.
+            let interface = utun?.interfaceName
+            try networkService.withdraw()
             utun?.close()
+            // Wait for configd to withdraw our routes and DNS before releasing PF.
+            try recoveryVerifier.verifyRouting(utun: interface)
+            if let token = state?.pfEnableToken, !pfController.isEnabled {
+                try pfController.adoptRecoveryToken(token)
+            }
+            if pfController.isEnabled { try pfController.disable() }
+            else { try pfController.clearAnchorRules() }
+            // A verification retry must not try to release an already released token.
+            if let state {
+                try recoveryStore.save(HelperRecoveryState(utun: state.utun, pfEnableToken: nil))
+            }
+            try recoveryVerifier.verifyAnchor()
+            try recoveryStore.remove()
             utun = nil
             tunnelController = nil
             healthConfiguration = nil
-            if var secret = healthSecret {
-                secret.resetBytes(in: 0..<secret.count)
-            }
+            if var secret = healthSecret { secret.resetBytes(in: 0..<secret.count) }
             healthSecret = nil
             lastHealth = nil
             recoveryAttentionRequired = false
             runtimeStatus = .stopped
-            reply(true)
         } catch {
+            recoveryAttentionRequired = true
             runtimeStatus = .teardownFailed
-            NSLog("DroidBridge fail-closed stop retained protection: %@", error.localizedDescription)
-            reply(false)
+            throw error
         }
-    }
-
-    private func restorePersistedStateLocked() throws {
-        guard let state = try recoveryStore.load() else { return }
-
-        // Idempotent, so it also covers a crash before or during publishing.
-        try networkService.withdraw()
-
-        if let token = state.pfEnableToken {
-            if !pfController.isEnabled {
-                try pfController.adoptRecoveryToken(token)
-            }
-            // A failed -X keeps the token and journal so Stop can be retried.
-            try pfController.disable()
-        } else if pfController.isEnabled {
-            // The current process may have enabled PF successfully but failed
-            // to persist the returned token. Keep using the in-memory token;
-            // a failed release leaves both it and the journal retryable.
-            try pfController.disable()
-        } else {
-            // The helper may have died after loading the anchor but before
-            // persisting the enable token. A fresh process has no token to
-            // release, so it can only remove this app's anchor rules.
-            try pfController.clearAnchorRules()
-        }
-        try recoveryStore.remove()
-        recoveryAttentionRequired = false
     }
 
     private func beginHealthMonitoringLocked(
@@ -338,52 +362,92 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
         }
     }
 
-    private func monitorRelay(
+    func monitorRelay(
         configuration: TunnelRuntimeConfiguration,
         secret: Data,
         generation: UInt64,
         immediately: Bool
     ) async {
-        let retryDelays = [1, 2, 4]
+        // With 3 s probes this retains the running session for about a minute of missed health:
+        // Samsung's freezer was seen pausing the phone app ~45 s with USB attached, and stopping
+        // the engine at ~20 s dropped every flow (Parsec) although the phone came back. pf keeps
+        // the session fail-closed meanwhile; matches the USB no-progress deadline (60 s).
+        let retryDelays = [1, 2, 4, 8, 15, 15]
         var retryIndex = 0
+        var recoveryDelay = 5
+        var failureCount = 0
         var probeImmediately = immediately
 
         while !Task.isCancelled {
+            guard canMonitorHealth(generation: generation) else { return }
             if !probeImmediately {
-                do { try await Task.sleep(for: .seconds(2)) }
+                do { try await healthSleep(.seconds(2)) }
                 catch { return }
             }
             probeImmediately = false
+            guard !Task.isCancelled, canMonitorHealth(generation: generation) else { return }
 
             do {
-                let health = try await Self.probeHealth(
-                    configuration: configuration,
-                    secret: secret
-                )
-                guard applyHealthyRelay(health, generation: generation) else { return }
+                let health = try await healthProbe(configuration, secret)
+                guard !Task.isCancelled, applyHealthyRelay(health, generation: generation) else { return }
+                if failureCount > 0 {
+                    healthLogger.info("Health probe recovered after \(failureCount) failed attempts")
+                }
                 retryIndex = 0
+                recoveryDelay = 5
+                failureCount = 0
             } catch {
-                if Task.isCancelled { return }
+                if Task.isCancelled || error is CancellationError { return }
+                if failureCount < Int.max { failureCount += 1 }
                 let cellularFailure = (error as? DroidBridgeError) == .cellularUnavailable
-                guard blockDataPlane(
+                let recoverable = Self.canRecoverHealth(error)
+                guard handleHealthFailure(
+                    error: error,
+                    attempt: failureCount,
+                    retriesRemain: recoverable && retryIndex < retryDelays.count,
                     cellularFailure: cellularFailure,
                     generation: generation
                 ) else { return }
 
-                guard retryIndex < retryDelays.count else {
-                    markPersistentBlock(
-                        cellularFailure: cellularFailure,
-                        generation: generation
-                    )
+                guard recoverable else {
+                    markPersistentBlock(cellularFailure: cellularFailure, generation: generation)
                     return
                 }
-                let delay = retryDelays[retryIndex]
-                retryIndex += 1
-                do { try await Task.sleep(for: .seconds(delay)) }
-                catch { return }
+                let delay: Int
+                if retryIndex < retryDelays.count {
+                    delay = retryDelays[retryIndex]
+                    retryIndex += 1
+                } else {
+                    // Keep the engine stopped while the phone cannot execute. A later
+                    // authenticated HEALTH may rebuild it without requiring a USB reset.
+                    delay = recoveryDelay
+                    recoveryDelay = min(recoveryDelay * 2, 30)
+                    healthLogger.notice("Waiting for relay recovery; next authenticated probe in \(delay) seconds")
+                }
                 guard markReconnecting(generation: generation) else { return }
+                do { try await healthSleep(.seconds(delay)) }
+                catch { return }
                 probeImmediately = true
             }
+        }
+    }
+
+    private func canMonitorHealth(generation: UInt64) -> Bool {
+        stateLock.withLock {
+            generation == healthGeneration && tunnelController != nil && !stopCoordinator.isPending
+        }
+    }
+
+    private static func canRecoverHealth(_ error: Error) -> Bool {
+        guard let error = error as? DroidBridgeError else { return true } // Transport errors.
+        switch error {
+        case .relayTimedOut, .relayAppNotRunning, .cellularUnavailable: return true
+        case .relayProtocol(let message):
+            // NWConnectionTransport uses these exact local errors for EOF before
+            // a complete control frame. Retry the authenticated exchange; malformed
+            // frames and failed authentication must still stop recovery.
+            return message == "peer closed" || message == "truncated frame"
+        default: return false // Authentication, protocol and configuration failures need intervention.
         }
     }
 
@@ -404,19 +468,12 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
 
     private func applyHealthyRelay(_ health: RelayHealth, generation: UInt64) -> Bool {
         stateLock.withLock {
-            guard generation == healthGeneration, tunnelController != nil else { return false }
+            guard generation == healthGeneration, tunnelController != nil, !stopCoordinator.isPending else { return false }
             if runtimeStatus != .running {
-                guard let utun,
-                      let healthConfiguration,
-                      let healthSecret
-                else { return false }
+                guard let rebuildController else { return false }
                 // A fresh controller isolates late callbacks from flows that
                 // belonged to the blocked engine generation.
-                let replacement = Self.makeTunnelController(
-                    device: utun,
-                    configuration: healthConfiguration,
-                    secret: healthSecret
-                )
+                let replacement = rebuildController()
                 guard replacement.start() else {
                     runtimeStatus = .persistentBlockedRelay
                     return false
@@ -429,9 +486,27 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
         }
     }
 
-    private func blockDataPlane(cellularFailure: Bool, generation: UInt64) -> Bool {
+    private func handleHealthFailure(error: Error, attempt: Int, retriesRemain: Bool,
+                                     cellularFailure: Bool, generation: UInt64) -> Bool {
         stateLock.withLock {
-            guard generation == healthGeneration, let tunnelController else { return false }
+            guard generation == healthGeneration, let tunnelController, !stopCoordinator.isPending else { return false }
+            let reason: String
+            switch error {
+            case DroidBridgeError.relayTimedOut: reason = "deadline"
+            case DroidBridgeError.cellularUnavailable: reason = "cellular-unavailable"
+            case DroidBridgeError.relayAuthenticationFailed: reason = "authentication"
+            case DroidBridgeError.relayProtocol: reason = "protocol"
+            default: reason = "transport"
+            }
+            // One missing status reply does not invalidate the existing authenticated
+            // data sockets. Keep their owner and running status through bounded retry.
+            // Explicit failures and an exhausted deadline budget still fail closed.
+            if (error as? DroidBridgeError) == .relayTimedOut,
+               retriesRemain, runtimeStatus == .running {
+                healthLogger.notice("Health probe failed: reason=\(reason, privacy: .public) attempt=\(attempt) action=retain")
+                return true
+            }
+            healthLogger.notice("Health probe failed: reason=\(reason, privacy: .public) attempt=\(attempt) action=block")
             tunnelController.stop()
             runtimeStatus = cellularFailure ? .blockedCellular : .blockedRelay
             return true
@@ -440,8 +515,9 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
 
     private func markReconnecting(generation: UInt64) -> Bool {
         stateLock.withLock {
-            guard generation == healthGeneration, tunnelController != nil else { return false }
-            runtimeStatus = .reconnecting
+            guard generation == healthGeneration, tunnelController != nil, !stopCoordinator.isPending else { return false }
+            // A retained session must stay running, or healthy recovery would replace it.
+            if runtimeStatus != .running { runtimeStatus = .reconnecting }
             return true
         }
     }
@@ -468,4 +544,20 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
             maximumFlows: configuration.maximumFlows
         )
     }
+
+    #if DROIDBRIDGE_HELPER_CHECKS
+    // Test-only lifecycle fixture; excluded from the privileged helper binary.
+    func seedRelayForChecks(_ controller: TunnelController, configuration: TunnelRuntimeConfiguration,
+                            status: TunnelRuntimeStatus, rebuild: (() -> TunnelController)? = nil) {
+        stateLock.withLock {
+            tunnelController = controller
+            rebuildController = rebuild
+            healthConfiguration = configuration
+            healthSecret = Data(count: 32)
+            runtimeStatus = status
+        }
+    }
+
+    var healthGenerationForChecks: UInt64 { stateLock.withLock { healthGeneration } }
+    #endif
 }

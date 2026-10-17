@@ -1,0 +1,3 @@
+# Preserve the exact upstream LGPL header/license, including their whitespace.
+macos/USB/Sources/CAoaUSB/vendor/libusb.h -whitespace
+macos/USB/LIBUSB-COPYING -whitespace

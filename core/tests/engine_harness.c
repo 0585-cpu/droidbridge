@@ -22,14 +22,13 @@ static void cb_open(void *ctx, db_flow_id_t flow, const uint8_t dst_ip[4], uint1
 static long cb_send(void *ctx, db_flow_id_t flow, const uint8_t *data, size_t length) {
     (void)flow;
     harness_t *h = ctx;
-    if (h->send_return == 0) { /* default: accept all */
-        if (h->relay_outbound_len + length <= HARNESS_BUF) {
-            memcpy(h->relay_outbound + h->relay_outbound_len, data, length);
-            h->relay_outbound_len += length;
-        }
-        return (long)length;
+    if (h->send_return < 0) return h->send_return;
+    size_t took = h->send_return == 0 || (size_t)h->send_return >= length ? length : (size_t)h->send_return;
+    if (h->relay_outbound_len + took <= HARNESS_BUF) {
+        memcpy(h->relay_outbound + h->relay_outbound_len, data, took);
+        h->relay_outbound_len += took;
     }
-    return h->send_return; /* override (e.g. DB_SEND_AGAIN) */
+    return (long)took;
 }
 static void cb_close(void *ctx, db_flow_id_t flow, db_close_reason_t reason) {
     (void)flow;
@@ -47,7 +46,12 @@ static uint32_t cb_rand(void *ctx) { (void)ctx; return 0x12345678u; }
 static uint32_t cb_now(void *ctx) { return ((harness_t *)ctx)->now_ms; }
 
 void harness_create(harness_t *h, uint16_t max_flows) {
+    harness_create_at_time(h, max_flows, 0);
+}
+
+void harness_create_at_time(harness_t *h, uint16_t max_flows, uint32_t now_ms) {
     memset(h, 0, sizeof *h);
+    h->now_ms = now_ms;
     db_engine_config_t cfg = {
         .maximum_flows = max_flows, .mtu = 1280, .idle_timeout_ms = 300000,
         .emit_packet = cb_emit, .open_flow = cb_open, .send_flow = cb_send,

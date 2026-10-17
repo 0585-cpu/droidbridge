@@ -14,5 +14,8 @@ func runUtunFramingChecks(_ r: CheckRunner) {
     r.check(UtunFraming.decode(Data([0, 0, 0, 30]) + ipv4) == nil, "rejects IPv6")
     r.check(UtunFraming.decode(Data([0, 0, 0, 2, 0x45])) == Data([0x45]), "accepts one-byte IPv4 payload")
     r.check(UtunFraming.decode(Data([0, 0, 2])) == nil, "rejects short frame")
+    let ipv6 = Data([0x60]) + Data(count: 39)
+    r.check(UtunFraming.decode(UtunFraming.encode(ipv6)) == ipv6, "IPv6 utun framing round trip")
+    r.check(Array(UtunFraming.encode(ipv6).prefix(4)) == [0,0,0,30], "IPv6 uses AF_INET6")
     r.finish("utun framing")
 }

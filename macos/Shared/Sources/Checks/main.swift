@@ -2,13 +2,25 @@ import DroidBridgeShared
 import Foundation
 
 let runner = CheckRunner()
+if CommandLine.arguments.contains("--network-eof-checks") {
+    await runNetworkEOFChecks(runner)
+    exit(runner.failures == 0 ? 0 : 1)
+}
 runConfigurationChecks(runner)
 await runAdbChecks(runner)
 runStorageChecks(runner)
 await runPairingChecks(runner)
 await runRelayChecks(runner)
+await runNetworkEOFChecks(runner)
+await runNetworkHalfCloseChecks(runner)
 await runHostChecks(runner)
+runConnectionPresentationChecks(runner)
 runRelayFlowChecks(runner)
+runUDPAssociationChecks(runner)
+await runUDPAssociationRelayChecks(runner)
+runExtensionFixtureChecks(runner)
+await runExtensionChecks(runner)
+await runExtensionRelayChecks(runner)
 runTunnelChecks(runner)
 runUtunFramingChecks(runner)
 runPfRouteChecks(runner)

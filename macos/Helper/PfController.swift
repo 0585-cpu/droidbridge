@@ -67,10 +67,35 @@ final class PfController {
 
         let releaseArguments = ["-X", enableToken]
         let releaseResult = try run(URL(fileURLWithPath: "/sbin/pfctl"), releaseArguments, nil)
-        guard releaseResult.status == 0 else {
-            throw commandError(releaseArguments, releaseResult)
+        if releaseResult.status != 0 {
+            guard try referenceIsAbsent(enableToken) else {
+                throw commandError(releaseArguments, releaseResult)
+            }
         }
         self.enableToken = nil
+    }
+
+    /// A crash can happen after -X succeeds but before the journal records it. A
+    /// failed repeat is safe only when a successful listing proves our token absent.
+    private func referenceIsAbsent(_ token: String) throws -> Bool {
+        let result = try run(URL(fileURLWithPath: "/sbin/pfctl"), ["-s", "References"], nil)
+        guard result.status == 0 else { return false }
+        let lines = String(decoding: result.standardOutput, as: UTF8.self)
+            .split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if lines == ["No pf starter references held"] { return true }
+        guard lines.count >= 2, lines[0] == "TOKENS:",
+              lines[1].split(whereSeparator: \.isWhitespace) == ["PID", "Process", "Name", "TOKEN", "TIMESTAMP"],
+              let wanted = UInt64(token) else { return false }
+        // Process names contain spaces; parse the numeric token beside the timestamp.
+        let pattern = try NSRegularExpression(pattern: #"^[0-9]+\s+.+?\s+([0-9]+)\s+[0-9]+ days [0-9]{2}:[0-9]{2}:[0-9]{2}$"#)
+        for line in lines.dropFirst(2) {
+            let full = NSRange(line.startIndex..., in: line)
+            guard let match = pattern.firstMatch(in: line, range: full),
+                  let range = Range(match.range(at: 1), in: line),
+                  let value = UInt64(line[range]) else { return false }
+            if value == wanted { return false }
+        }
+        return true
     }
 
     func adoptRecoveryToken(_ token: String) throws {

@@ -13,7 +13,7 @@ let package = Package(
     targets: [
         .target(
             name: "DroidBridgeShared",
-            resources: [.copy("Resources/dbp-v1.json")],
+            resources: [.copy("Resources/dbp-v1.json"), .copy("Resources/dbp-extensions.json")],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .executableTarget(

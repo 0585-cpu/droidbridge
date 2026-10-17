@@ -39,5 +39,8 @@ func runNetworkServiceChecks(_ r: CheckRunner) {
     """
     r.check(TunnelNetworkService.primaryInterface(from: global) == "utun6", "primary interface is read back")
     r.check(TunnelNetworkService.primaryInterface(from: "  No such key\n") == nil, "no primary means nil")
+    r.check(lines.contains("d.add PrefixLength * # 64"), "IPv6 prefix lengths are CFNumber array")
+    r.check(lines.contains("set State:/Network/Service/\(id)/IPv6"), "IPv6 primary state is always captured")
+    r.check(remove.contains("remove State:/Network/Service/\(id)/IPv6"), "withdraw removes IPv6 state")
     r.finish("network service")
 }

@@ -31,6 +31,10 @@ void db_lwip_address(db_lwip_context_t *ctx, uint8_t out[4]);
 void db_lwip_netmask(db_lwip_context_t *ctx, uint8_t out[4]);
 uint16_t db_lwip_mtu(db_lwip_context_t *ctx);
 struct netif *db_lwip_netif(db_lwip_context_t *ctx);
+/* Listener child ownership stays in the adapter, including before accept(). */
+struct tcp_pcb;
+int db_lwip_has_pending(const struct tcp_pcb *listener);
+void db_lwip_abort_pending(const struct tcp_pcb *listener);
 void db_lwip_shutdown(db_lwip_context_t *ctx);
 
 #ifdef __cplusplus

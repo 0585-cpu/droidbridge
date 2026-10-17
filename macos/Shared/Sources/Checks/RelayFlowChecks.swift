@@ -12,10 +12,13 @@ final class ScriptedTransport: RelayTransport, @unchecked Sendable {
     private(set) var sentRaw: [Data] = []
     var started = false
     var cancelled = false
+    private var finishCount = 0
+    var finishes: Int { lock.withLock { finishCount } }
 
     init(responses: [Data]) { inbox = responses.reduce(Data(), +) }
 
     func start() async throws { started = true }
+    func finishSending() async throws { lock.withLock { finishCount += 1 } }
     func cancel() async { cancelled = true }
 
     func send(_ data: Data) async throws {
@@ -52,13 +55,14 @@ final class ScriptedTransport: RelayTransport, @unchecked Sendable {
 }
 
 final class RecordingFlowDelegate: RelayFlowDelegate, @unchecked Sendable {
-    enum Event: Equatable { case opened(UInt32), failed(UInt32, DbpErrorCode), received(UInt32, Data), writable(UInt32), closed(UInt32, Bool) }
+    enum Event: Equatable { case opened(UInt32), failed(UInt32, DbpErrorCode), received(UInt32, Data), writable(UInt32), readEOF(UInt32), closed(UInt32, Bool) }
     private let lock = NSLock()
     private(set) var events: [Event] = []
     func relayFlowOpened(_ f: UInt32) { lock.withLock { events.append(.opened(f)) } }
     func relayFlowFailed(_ f: UInt32, error: DbpErrorCode) { lock.withLock { events.append(.failed(f, error)) } }
-    func relayFlowReceived(_ f: UInt32, data: Data) { lock.withLock { events.append(.received(f, data)) } }
+    func relayFlowReceived(_ f: UInt32, data: Data) async -> Bool { lock.withLock { events.append(.received(f, data)) }; return true }
     func relayFlowWritable(_ f: UInt32) { lock.withLock { events.append(.writable(f)) } }
+    func relayFlowReadEOF(_ f: UInt32) { lock.withLock { events.append(.readEOF(f)) } }
     func relayFlowClosed(_ f: UInt32, isError: Bool) { lock.withLock { events.append(.closed(f, isError)) } }
     var snapshot: [Event] { lock.withLock { events } }
 }
@@ -98,6 +102,38 @@ func runRelayFlowChecks(_ r: CheckRunner) {
         let events = delegate.snapshot
         r.check(events.first == .opened(7), "opens flow only after authenticated OPEN_OK")
         r.check(events.contains(.received(7, Data("pong".utf8))), "delivers raw remote bytes")
+    }
+
+    // Remote FIN may precede the final upload. Seal only after all queued bytes are sent.
+    runBlocking {
+        let transport = ScriptedTransport(responses: [
+            serverFrame(.helloOk, clientNonce: cn, serverNonce: sn),
+            serverFrame(.openOk, clientNonce: cn, serverNonce: sn),
+        ])
+        let delegate = RecordingFlowDelegate()
+        let flow = RelayFlowConnection(flowId: 71, destination: .ipv4("93.184.216.34", 443),
+                                       secret: flowSecret, transport: transport, delegate: delegate,
+                                       clientNonce: cn, now: { 1_700_000_000 })
+        try? await flow.start()
+        for _ in 0..<100 {
+            if delegate.snapshot.contains(.readEOF(71)) { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        r.check(delegate.snapshot.contains(.readEOF(71)), "remote FIN notifies only read EOF")
+        r.check(!transport.cancelled, "remote FIN preserves upload transport")
+        let tail = Data("upload-after-remote-FIN".utf8)
+        r.check(flow.enqueueFromCore(tail), "upload accepted after remote FIN")
+        flow.finishSending(); flow.finishSending()
+        r.check(!flow.enqueueFromCore(Data([1])), "no bytes accepted after client FIN")
+        for _ in 0..<100 {
+            if delegate.snapshot.contains(.closed(71, false)) { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        r.check(transport.sentRaw.last == tail, "final upload delivered before completion")
+        r.check(transport.finishes == 1, "duplicate client FIN sends one transport FIN")
+        r.check(delegate.snapshot.filter { $0 == .closed(71, false) }.count == 1,
+                "both EOFs release relay exactly once")
+        r.check(transport.cancelled, "completed relay transport released")
     }
 
     // OPEN_ERROR maps to failed(errorCode)

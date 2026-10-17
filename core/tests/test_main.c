@@ -13,7 +13,9 @@ void run_flow_limits_tests(void);
 void run_dns_bridge_tests(void);
 void run_128_flows_tests(void);
 
+void run_dualstack_tests(void);
 int main(void) {
+    run_dualstack_tests();
     run_dbp_codec_tests();
     run_destination_policy_tests();
     run_ipv4_tcp_tests();

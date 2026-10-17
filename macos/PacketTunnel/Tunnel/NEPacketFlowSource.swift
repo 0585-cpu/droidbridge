@@ -14,7 +14,7 @@ final class NEPacketFlowSource: PacketSource {
     func read(_ handler: @escaping @Sendable ([Data]) -> Void) {
         flow.readPackets { packets, protocols in
             let ipv4 = zip(packets, protocols).compactMap { packet, addressFamily in
-                addressFamily.int32Value == AF_INET ? packet : nil
+                (addressFamily.int32Value == AF_INET || addressFamily.int32Value == AF_INET6) ? packet : nil
             }
             handler(ipv4)
         }
@@ -23,7 +23,7 @@ final class NEPacketFlowSource: PacketSource {
     func write(_ packets: [Data]) {
         flow.writePackets(
             packets,
-            withProtocols: packets.map { _ in NSNumber(value: AF_INET) }
+            withProtocols: packets.map { NSNumber(value: $0.first.map { $0 >> 4 } == 6 ? AF_INET6 : AF_INET) }
         )
     }
 }

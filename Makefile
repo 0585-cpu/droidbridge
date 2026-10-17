@@ -24,6 +24,9 @@ fuzz-smoke:
 	build/core-fuzz/fuzz_ipv4_tcp build/core-fuzz/corpus-ip -max_total_time=$(FUZZ_SECONDS) -max_len=2048 -timeout=2 >/dev/null 2>&1 && echo "fuzz_ipv4_tcp: no crash"
 	build/core-fuzz/fuzz_dns_packet build/core-fuzz/corpus-dns -max_total_time=$(FUZZ_SECONDS) -max_len=4096 -timeout=2 >/dev/null 2>&1 && echo "fuzz_dns_packet: no crash"
 
+	mkdir -p build/core-fuzz/corpus-dualstack
+	build/core-fuzz/fuzz_ip_packet build/core-fuzz/corpus-dualstack -max_total_time=$(FUZZ_SECONDS) -max_len=2048 -timeout=2 >/dev/null 2>&1 && echo "fuzz_ip_packet: no crash"
+
 # Android relay (needs JDK 17; JAVA_HOME auto-detected from the Gradle-managed JDK if present).
 ANDROID_JDK ?= $(firstword $(wildcard $(HOME)/.gradle/jdks/eclipse_adoptium-17-*/*/Contents/Home))
 .PHONY: test-android smoke-android
@@ -33,9 +36,13 @@ test-android:
 smoke-android:
 	./scripts/smoke-android-relay.sh
 
-.PHONY: check-macos check-macos-helper smoke-macos-control
+.PHONY: check-macos check-macos-usb check-macos-helper smoke-macos-control
 check-macos:
 	swift run --package-path macos/Shared Checks
+
+check-macos-usb:
+	bash scripts/check-usb-write-deadline.sh
+	swift run --package-path macos/USB USBChecks
 
 check-macos-helper:
 	./scripts/check-macos-helper.sh

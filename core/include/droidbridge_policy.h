@@ -24,6 +24,9 @@ typedef enum {
 
 /* `address` is 4 bytes in network order. NULL is denied. */
 db_policy_result_t db_policy_check_ipv4(const uint8_t address[4]);
+db_policy_result_t db_policy_check_ipv6(const uint8_t address[16]);
+/* RFC 6052 prefix lengths; embedded IPv4 is checked before allowing a matched prefix. */
+db_policy_result_t db_policy_check_ipv6_nat64(const uint8_t address[16], const uint8_t prefix[16], uint8_t length);
 
 #ifdef __cplusplus
 }

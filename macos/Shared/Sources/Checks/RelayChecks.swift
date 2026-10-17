@@ -54,6 +54,9 @@ private final class HangingDbpConnection: DbpConnection, @unchecked Sendable {
         pending.forEach {
             $0.resume(throwing: DroidBridgeError.relayProtocol("closed"))
         }
+        // Closing a real transport can resume its receive before asynchronous
+        // close cleanup finishes. The deadline must still be the reported cause.
+        try? await Task.sleep(for: .milliseconds(20))
     }
     var wasClosed: Bool { lock.withLock { closed } }
 }
@@ -129,7 +132,28 @@ func runRelayChecks(_ r: CheckRunner) async {
 
     // wrong secret -> auth failure
     let badClient = RelayControlClient(secret: Data(count: 32), connectionFactory: { echo.makeConnection() }, now: { 1_700_000_000 })
-    do { _ = try await badClient.health(); r.check(false, "wrong secret rejected") } catch { r.check(true, "wrong secret rejected") }
+    do { _ = try await badClient.health(); r.check(false, "wrong secret rejected") }
+    catch { r.check(true, "wrong secret rejected") }
+
+    var badSignature = packet("hello_ok")
+    badSignature[DbpCodec.headerSize - 1] ^= 1
+    let forgedResponse = badSignature
+    let unauthenticated = RelayControlClient(secret: fixtureSecret, connectionFactory: {
+        FakeDbpConnection(responseFrames: [forgedResponse])
+    })
+    do { _ = try await unauthenticated.health(); r.check(false, "forged health response rejected") }
+    catch { r.check(error as? DroidBridgeError == .relayAuthenticationFailed,
+                    "authentication failure before deadline preserves its type") }
+
+    let malformed = RelayControlClient(secret: fixtureSecret, connectionFactory: {
+        FakeDbpConnection(responseFrames: [Data(repeating: 0, count: 64)])
+    })
+    do { _ = try await malformed.health(); r.check(false, "malformed health header rejected") }
+    catch {
+        if case DroidBridgeError.relayProtocol = error {
+            r.check(true, "protocol failure before deadline preserves its type")
+        } else { r.check(false, "protocol failure must not be relabeled as a timeout") }
+    }
 
     // timeout actively closes a stalled transport so structured concurrency
     // cannot wait forever for an uncooperative receive continuation.
@@ -144,6 +168,8 @@ func runRelayChecks(_ r: CheckRunner) async {
         r.check(false, "stalled health should time out")
     } catch {
         r.check(hanging.wasClosed, "health timeout closes stalled transport")
+        r.check(error as? DroidBridgeError == .relayTimedOut,
+                "health deadline reports timeout, not the EOF caused by cancelling its receive")
     }
 
     // --- RelayPreparer rollback ---
@@ -164,5 +190,37 @@ func runRelayChecks(_ r: CheckRunner) async {
         r.check(removed == [RelayPreparer.relayPort, RelayPreparer.pairingPort].sorted() && started, "opens app and rolls back on health failure")
     }
 
+    // Changing a USB port is a transport change; only a verified peer can update that location.
+    let oldConfig = try! TunnelRuntimeConfiguration(deviceSerial: "aoa:0-1", relayHost: "127.0.0.1",
+        relayPort: 27183, pairedPeerId: "paired-phone", keychainAccount: "paired-phone", maximumFlows: 128)
+    let configStore = PortConfigurationStore(oldConfig)
+    let newPort = AdbDevice(serial: "aoa:0-2", state: .authorized)
+    let portAdb = StubAdb()
+    let rejected = RelayPreparer(adb: portAdb, healthClient: StubHealth(result: .failure(.relayTimedOut)))
+    do {
+        _ = try await rejected.preparePaired(device: newPort, secret: Data(count: 32), configuration: oldConfig, store: configStore)
+        r.check(false, "unverified USB port must fail")
+    } catch {
+        r.check(configStore.read() == oldConfig, "failed authentication preserves previous USB location and pairing")
+    }
+    let accepted = RelayPreparer(adb: StubAdb(), healthClient: StubHealth(result: .success(RelayHealth(
+        status: .ready, activeSessions: 0, maximumSessions: 128, uploadedBytes: 0, downloadedBytes: 0, carrierName: "C"))))
+    do {
+        _ = try await accepted.preparePaired(device: newPort, secret: Data(count: 32), configuration: oldConfig, store: configStore)
+        let updated = configStore.read()
+        r.check(updated?.deviceSerial == "aoa:0-2" && updated?.keychainAccount == "paired-phone"
+            && updated?.pairedPeerId == "paired-phone", "authenticated USB port change retains the original pairing")
+    } catch { r.check(false, "authenticated USB port update: \(error)") }
+    r.check(!oldConfig.acceptsTransportCandidate(serial: "other-adb-device"), "USB port fallback cannot select an unrelated transport")
+
     r.finish("relay")
+}
+
+private final class PortConfigurationStore: RuntimeConfigurationStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: TunnelRuntimeConfiguration?
+    init(_ value: TunnelRuntimeConfiguration) { self.value = value }
+    func read() -> TunnelRuntimeConfiguration? { lock.withLock { value } }
+    func write(_ configuration: TunnelRuntimeConfiguration) { lock.withLock { value = configuration } }
+    func delete() { lock.withLock { value = nil } }
 }

@@ -168,13 +168,14 @@ on run argv
     set helperStage to helperDestination & ".new"
     set plistStage to plistDestination & ".new"
     set recoveryState to "/Library/PrivilegedHelperTools/io.droidbridge.recovery.json"
+    set stopIntent to "/Library/PrivilegedHelperTools/io.droidbridge.stop.json"
     set requirementArgument to "-R=" & helperRequirement
 
     set operationLock to "/Library/PrivilegedHelperTools/.io.droidbridge.operation.lock"
     set commandText to "/usr/bin/shlock -f " & quoted form of operationLock & " -p $$ || { echo 'another DroidBridge helper operation is in progress' >&2; exit 73; }"
     set commandText to commandText & "; trap 'trap - 1 2 15; exit 74' 1 2 15"
     set commandText to commandText & "; trap '/bin/rm -f " & operationLock & "' 0"
-    set commandText to commandText & "; if test -e " & quoted form of recoveryState & "; then echo 'DroidBridge fail-closed recovery is active; retry Stop Tunnel before updating the helper' >&2; exit 70; fi"
+    set commandText to commandText & "; if test -e " & quoted form of recoveryState & " || test -e " & quoted form of stopIntent & "; then echo 'DroidBridge fail-closed recovery is active; retry Stop Tunnel before updating the helper' >&2; exit 70; fi"
     set commandText to commandText & " && /bin/rm -f " & quoted form of helperStage & " " & quoted form of plistStage
     set commandText to commandText & " && /usr/bin/install -o root -g wheel -m 0755 " & quoted form of helperSource & " " & quoted form of helperStage
     set commandText to commandText & " && /usr/bin/codesign --verify --strict " & quoted form of requirementArgument & " " & quoted form of helperStage
@@ -199,6 +200,7 @@ on run argv
     set helperDestination to "/Library/PrivilegedHelperTools/io.droidbridge.helper"
     set plistDestination to "/Library/LaunchDaemons/io.droidbridge.helper.plist"
     set recoveryState to "/Library/PrivilegedHelperTools/io.droidbridge.recovery.json"
+    set stopIntent to "/Library/PrivilegedHelperTools/io.droidbridge.stop.json"
     set operationLock to "/Library/PrivilegedHelperTools/.io.droidbridge.operation.lock"
     set helperStage to helperDestination & ".new"
     set plistStage to plistDestination & ".new"
@@ -206,10 +208,10 @@ on run argv
     set commandText to "/usr/bin/shlock -f " & quoted form of operationLock & " -p $$ || { echo 'another DroidBridge helper operation is in progress' >&2; exit 73; }"
     set commandText to commandText & "; trap 'trap - 1 2 15; exit 74' 1 2 15"
     set commandText to commandText & "; trap '/bin/rm -f " & operationLock & "' 0"
-    set commandText to commandText & "; if test -e " & quoted form of recoveryState & "; then echo 'DroidBridge fail-closed recovery is still active; retry Stop Tunnel first' >&2; exit 70; fi"
+    set commandText to commandText & "; if test -e " & quoted form of recoveryState & " || test -e " & quoted form of stopIntent & "; then echo 'DroidBridge fail-closed recovery is still active; retry Stop Tunnel first' >&2; exit 70; fi"
     set commandText to commandText & "; if /bin/launchctl print system/io.droidbridge.helper >/dev/null 2>&1; then /bin/launchctl bootout system/io.droidbridge.helper >/dev/null 2>&1 || { echo 'could not unregister DroidBridge helper; files were retained' >&2; exit 71; }; fi"
     set commandText to commandText & "; if /bin/launchctl print system/io.droidbridge.helper >/dev/null 2>&1; then echo 'DroidBridge helper is still registered; files were retained' >&2; exit 71; fi"
-    set commandText to commandText & "; if test -e " & quoted form of recoveryState & "; then if test -f " & quoted form of plistDestination & "; then /bin/launchctl bootstrap system " & quoted form of plistDestination & " >/dev/null 2>&1 || true; fi; echo 'DroidBridge became active during removal; helper was retained' >&2; exit 70; fi"
+    set commandText to commandText & "; if test -e " & quoted form of recoveryState & " || test -e " & quoted form of stopIntent & "; then if test -f " & quoted form of plistDestination & "; then /bin/launchctl bootstrap system " & quoted form of plistDestination & " >/dev/null 2>&1 || true; fi; echo 'DroidBridge became active during removal; helper was retained' >&2; exit 70; fi"
     set commandText to commandText & "; /bin/rm -f " & quoted form of helperDestination & " " & quoted form of plistDestination & " " & quoted form of helperStage & " " & quoted form of plistStage
     do shell script commandText with administrator privileges
 end run

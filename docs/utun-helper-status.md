@@ -1,5 +1,7 @@
 # utun 헬퍼 앱 — 현황과 이어서 할 일 (2026-09-23)
 
+> 아래는 ADB 기반 과거 실기기 기록이다. 현재 AOA·UDP·프로필·IPv6 구현과 남은 시험은 [현재 계획](superpowers/plans/2026-09-23-droidbridge-udp-traffic-profile-plan.md), [실기기 대기표](udp-ipv6-device-acceptance.md)를 따른다. 새 기능의 실기기 결과로 해석하지 않는다.
+
 `main` 기준(`faf9b74`)입니다. 유료 Apple 계정 없이 NE 확장 대신 **root utun 헬퍼**로 도는 구조이고, 설계는
 [`superpowers/specs/2026-09-22-droidbridge-utun-helper-app-design.md`](superpowers/specs/2026-09-22-droidbridge-utun-helper-app-design.md)에 있습니다.
 
@@ -55,6 +57,6 @@ sudo ./scripts/diagnose-tunnel.sh      # 터널 켠 상태 스냅샷 → build/d
 - 터널이 켜진 동안 대화형 도구(Claude 등)는 끊길 수 있습니다 → 진단은 스크립트로 파일에 남기고, 끈 뒤에 읽으세요.
 - `sudo` 인증은 터미널 탭마다 따로입니다 → `sudo -v && <명령>`처럼 한 줄로 실행하세요.
 - zsh에서 `log`는 내장 명령입니다 → 항상 `/usr/bin/log show …`.
-- 이 통신사(LG U+)는 **1.1.1.1을 차단**합니다 → 시험 목적지는 `8.8.8.8`, 대기 시간은 릴레이 연결 타임아웃(10초)보다 길게 잡으세요.
+- 과거 특정 목적지 타임아웃의 원인은 미확정이다. 제어 가능한 여러 endpoint로 회선·목적지·터널 문제를 구분해야 한다.
 - `scutil`은 쓰기가 거부돼도 종료 코드 0입니다 → 출력과 실제 효과로 판정하세요.
-- `PairingServerTest` 실행 전 `adb forward --remove tcp:27184`, 끝나면 다시 추가하세요.
+- Pairing 테스트 포트는 AOA 작업에서 분리됐다. 자동 테스트 때문에 현재 ADB/Tetrd 연결을 제거하지 않는다.

@@ -14,6 +14,10 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.conflate
 
 /**
  * AES-256-GCM envelope in private SharedPreferences. Record: [idLen u8][id][nameLen u8][name][secret 32].
@@ -24,6 +28,15 @@ class AndroidPairingSecretStore(
     private val random: SecureRandom = SecureRandom(),
     private val keyProvider: () -> SecretKey,
 ) : PairingSecretStore {
+    override val changes: Flow<Unit> = callbackFlow {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key == KEY_PEER_ID || key == KEY_BLOB) trySend(Unit)
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        // Registration precedes the first load, covering writes while a screen is recreated.
+        trySend(Unit)
+        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }.conflate()
 
     override fun load(): PairedPeer? {
         val peerId = prefs.getString(KEY_PEER_ID, null) ?: return null

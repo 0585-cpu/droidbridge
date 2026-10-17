@@ -18,14 +18,43 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 
 class PairingServerTest {
+    @Test fun `partial frame timeout closes the real accepted socket`() = runBlocking {
+        val server = PairingServer(0)
+        server.open()
+        try {
+            val accepted = async { server.acceptOne() }
+            Socket("127.0.0.1",server.boundPort).use { client ->
+                client.soTimeout=1500
+                val channel=accepted.await()
+                // Stall within the length field, then within a declared body.
+                client.getOutputStream().write(byteArrayOf(0,0))
+                kotlin.test.assertFailsWith<kotlinx.coroutines.TimeoutCancellationException> {
+                    kotlinx.coroutines.withTimeout(100) { channel.readFrame() }
+                }
+                assertEquals(-1,client.getInputStream().read())
+            }
+        } finally { server.close() }
+    }
+
+    @Test
+    fun `pairing listener binds the IPv4 service address`() {
+        val server = PairingServer(0)
+        try {
+            server.open()
+            assertEquals("127.0.0.1", server.boundAddress!!.hostAddress)
+            Socket("127.0.0.1", server.boundPort).close()
+        } finally { server.close() }
+    }
+
     @Test
     fun `occupied pairing port reports failure instead of crashing the app`() {
         ServerSocket().use { occupied ->
-            occupied.bind(InetSocketAddress(InetAddress.getLoopbackAddress(), PairingServer.DEFAULT_PORT))
+            occupied.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0))
             val facade = AppPairingFacade(
                 store = InMemoryPairingSecretStore(),
                 androidDisplayName = "Test Android",
                 scope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob()),
+                serverFactory = { PairingServer(occupied.localPort) },
             )
 
             facade.beginPairing()
@@ -41,7 +70,7 @@ class PairingServerTest {
         first.open()
         val port = first.boundPort
         val accepted = async { first.acceptOne() }
-        val client = Socket(InetAddress.getLoopbackAddress(), port)
+        val client = Socket(InetAddress.getByName("127.0.0.1"), port)
         val channel = accepted.await()
         channel.close()
         client.close()
@@ -62,6 +91,7 @@ class PairingServerTest {
             store = InMemoryPairingSecretStore(),
             androidDisplayName = "Test Android",
             scope = scope,
+            serverFactory = { PairingServer(0) },
         )
         try {
             facade.beginPairing()

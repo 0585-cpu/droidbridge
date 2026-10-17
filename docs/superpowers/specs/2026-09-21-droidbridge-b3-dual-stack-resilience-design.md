@@ -1,5 +1,8 @@
 # DroidBridge B3 Dual-Stack, ICMP, LAN Policy, and Resilience 설계 확장 명세
 
+> 2026-09-23 전송 변경: [AOA 설계](../specs/2026-09-23-droidbridge-aoa-design.md)가 이 문서의 ADB 제품 경로를 대체한다.
+> **2026-09-23 보충:** [설계 보충](2026-09-23-droidbridge-udp-traffic-profile-design.md)의 helper 통합 및 선택형 TTL/Hop Limit·트래픽 프로필 범위가 이 문서의 관련 제외 조건보다 우선한다. APN/DUN 변경 제외와 기본 fail-closed 조건은 유지한다.
+
 - 문서 상태: B1/B2 승인 설계를 확장하는 B3 구현 기준
 - 작성일: 2026-09-21
 - 대상 릴리스: `v0.3.0-b3`, 안정화 태그 `v1.0.0`
