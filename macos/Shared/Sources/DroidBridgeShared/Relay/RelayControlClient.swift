@@ -34,14 +34,21 @@ public struct RelayControlClient: Sendable {
                 }
                 group.addTask {
                     try await Task.sleep(for: timeout)
-                    await box.close()
                     throw DroidBridgeError.relayTimedOut
                 }
                 defer { group.cancelAll() }
-                guard let result = try await group.next() else {
-                    throw DroidBridgeError.relayTimedOut
+                do {
+                    guard let result = try await group.next() else {
+                        throw DroidBridgeError.relayTimedOut
+                    }
+                    await box.close()
+                    return result
+                } catch {
+                    // Choose the initiating failure before cancellation wakes the
+                    // receive with EOF. Still close before joining the child tasks.
+                    await box.close()
+                    throw error
                 }
-                return result
             }
         } onCancel: {
             Task { await box.close() }

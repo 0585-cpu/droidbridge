@@ -150,13 +150,18 @@ int db_usb_claim(db_usb *usb) {
 int db_usb_read(db_usb *usb, unsigned char *data, int size) {
     int transferred = 0;
     int result = usb->bulk_transfer(usb->handle, usb->input, data, size, &transferred, 250);
-    if (transferred > 0) return transferred;
-    return result == LIBUSB_ERROR_TIMEOUT ? 0 : result;
+    // Only success and timeout preserve usable bytes. In particular, an overflow's
+    // count and buffer contents are undefined; feeding them to the frame decoder
+    // can silently corrupt this session instead of retiring it at the USB boundary.
+    if (result == 0 || result == LIBUSB_ERROR_TIMEOUT) return transferred;
+    return result;
 }
 int db_usb_out_packet_size(db_usb *usb) { return usb->output_packet_size; }
 int db_usb_write(db_usb *usb, unsigned char *data, int size) {
     int transferred = 0;
-    int result = usb->bulk_transfer(usb->handle, usb->output, data, size, &transferred, 1000);
+    // Allow a short accessory IO stall with a bounded per-transfer deadline.
+    // A frame can require multiple transfers. Never replay a timeout.
+    int result = usb->bulk_transfer(usb->handle, usb->output, data, size, &transferred, 2500);
     if (result != 0) return result; // any partial write error invalidates the framing session
     return transferred;
 }

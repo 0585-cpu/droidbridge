@@ -16,7 +16,7 @@ enum UtunError: LocalizedError {
     }
 }
 
-/// Owns one macOS utun control socket and exposes raw IPv4 packets.
+/// Owns one macOS utun control socket and exposes raw IPv4/IPv6 packets.
 final class UtunDevice: @unchecked Sendable {
     let interfaceName: String
 
@@ -133,7 +133,9 @@ final class UtunDevice: @unchecked Sendable {
         }
         let ipv6 = Process()
         ipv6.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
-        ipv6.arguments = [interfaceName, "inet6", TunnelNetworkService.ipv6Address, TunnelNetworkService.ipv6Gateway, "prefixlen", "64", "alias"]
+        // Darwin requires /128 when an explicit point-to-point destination is supplied.
+        // Publish our /64 locally; configd routes via the on-link IPv6 gateway separately.
+        ipv6.arguments = [interfaceName, "inet6", TunnelNetworkService.ipv6Address, "prefixlen", "64", "alias"]
         try ipv6.run(); ipv6.waitUntilExit()
         guard ipv6.terminationStatus == 0 else { throw UtunError.command("ifconfig IPv6 \(interfaceName)", ipv6.terminationStatus) }
     }

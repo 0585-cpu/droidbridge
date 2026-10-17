@@ -3,7 +3,7 @@ import Darwin
 
 public enum RelayCapability: UInt64, Sendable {
     case tcp4 = 1, udp4 = 2, tcp6 = 4, udp6 = 8, icmp4 = 16, icmp6 = 32
-    case nat64 = 64, networkEvents = 128, udpRebind = 256, trafficProfiles = 512
+    case nat64 = 64, networkEvents = 128, udpRebind = 256, trafficProfiles = 512, udpAssociation = 1024
 }
 
 public struct RelayCapabilities: Codable, Equatable, Sendable {

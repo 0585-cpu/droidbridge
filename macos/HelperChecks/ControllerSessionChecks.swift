@@ -42,7 +42,7 @@ private final class StoppedEngineDelegate: EngineBridgeDelegate {
     func engineSendFlow(_ flow: UInt32, _ data: Data) -> Int { data.count }
     func engineCloseFlow(_ flow: UInt32, reason: Int) {}
     func engineSendDNS(_ flow: UInt32, _ query: Data) {}
-    func engineOpenUDP(_ flow: UInt32, dstIP: [UInt8], port: UInt16) {}
+    func engineOpenUDP(_ flow: UInt32, dstIP: [UInt8], port: UInt16, sourcePort: UInt16, sourceIP: [UInt8]) {}
     func engineSendUDP(_ flow: UInt32, _ data: Data) {}
     func engineCloseUDP(_ flow: UInt32) {}
     func engineSendICMP(_ request: UInt32, family: UInt8, dstIP: Data, ttl: UInt8, payload: Data) {}
@@ -52,6 +52,7 @@ func runStoppedEngineCheck() {
     let engine = EngineBridge(maximumFlows: 4, delegate: delegate)!
     let bytes: [UInt8] = [0x45,0,0,0x28,0,1,0,0,0x40,6,0xb2,0xb9,0xc6,0x12,0,2,1,1,1,1,0x9c,0x40,1,0xbb,0,0,0,1,0,0,0,0,0x50,2,0x10,0,0x39,0xd0,0,0]
     engine.ingest(Data(bytes))
+    engine.queue.sync {} // Drain ingestion before inspecting cached metrics.
     precondition(engine.activeFlows == 1, "SYN creates a live flow")
     engine.stop()
     guard engine.activeFlows == 0 else {
@@ -59,9 +60,30 @@ func runStoppedEngineCheck() {
         exit(EXIT_FAILURE)
     }
     // Retained wrapper from late async work must no longer poll or mutate process-global lwIP state.
-    let replacement = EngineBridge(maximumFlows: 4, delegate: delegate)!
-    replacement.ingest(Data(bytes)); engine.poll(); engine.relayClosed(1, isError: true)
-    precondition(replacement.activeFlows == 1, "late old-engine operations leave replacement intact")
-    replacement.stop()
+    for _ in 0..<6 {
+        let replacement = EngineBridge(maximumFlows: 4, delegate: delegate)!
+        replacement.ingest(Data(bytes)); engine.poll(); engine.relayClosed(1, isError: true)
+        // Let actual DispatchSource/lwIP timers fire before repeating the lifecycle.
+        Thread.sleep(forTimeInterval: 0.35)
+        precondition(replacement.activeFlows == 1, "late old-engine operations leave replacement intact")
+        replacement.stop()
+    }
     print("stopped engine destruction: passed")
+}
+
+func runFrozenEngineMetricsCheck() {
+    let engine = EngineBridge(maximumFlows: 4, delegate: StoppedEngineDelegate())!
+    let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+    engine.queue.async { entered.signal(); release.wait() }
+    precondition(entered.wait(timeout: .now() + 1) == .success)
+    let returned = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+        _ = engine.activeFlows; _ = engine.activeUDP; _ = engine.udpDrops
+        returned.signal()
+    }
+    let responsive = returned.wait(timeout: .now() + 0.2) == .success
+    release.signal()
+    engine.stop()
+    precondition(responsive, "status metrics must not wait for a frozen engine queue")
+    print("frozen engine metrics: passed")
 }

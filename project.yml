@@ -62,20 +62,21 @@ targets:
     platform: macOS
     sources:
       - path: macos/HelperChecks
-      - path: macos/Helper/HelperCommandRunner.swift
-      - path: macos/Helper/PfController.swift
-      - path: macos/Helper/HelperRecoveryStateStore.swift
-      - path: macos/Helper/NetworkServicePublisher.swift
-      - path: macos/HostApp/Helper/ManualHelperInstaller.swift
+      - path: macos/Helper
+        excludes: [main.swift, Info.plist, Helper.entitlements, io.droidbridge.helper.plist]
+      - path: macos/HostApp/Helper
       - path: macos/CoreHost
       - path: macos/HostApp/Tunnel/TunnelStartupSequence.swift
+      - path: macos/HostApp/App/AoaDeviceLink.swift
     dependencies:
       - package: DroidBridgeShared
+      - package: DroidBridgeUSB
       - target: DroidBridgeCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.droidbridge.helper-checks
         SWIFT_VERSION: "6.0"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DROIDBRIDGE_HELPER_CHECKS"
         SWIFT_INCLUDE_PATHS:
           - $(SRCROOT)/core/include
         OTHER_SWIFT_FLAGS: [-Xcc, -fmodule-map-file=$(SRCROOT)/core/include/module.modulemap]

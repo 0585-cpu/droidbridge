@@ -34,7 +34,7 @@ func runExtensionChecks(_ r: CheckRunner) async {
 
 private let extensionSecret = Data(repeating: 3, count: 32)
 private actor ExtensionTransport: RelayTransport {
-    enum Mode: Sendable { case normal, badNonce, badHMAC, truncatedCaps, legacy, blockedHello, blockedQuery, blockedSend, wrongDirection }
+    enum Mode: Sendable { case normal, badNonce, badHMAC, badHMACSlowClose, truncatedCaps, legacy, blockedHello, blockedQuery, blockedSend, wrongDirection }
     let mode: Mode
     var started = false
     var cancelled = false
@@ -73,7 +73,7 @@ private actor ExtensionTransport: RelayTransport {
         let wrongNonce = mode == .badNonce && request.type != .hello
         let header = DbpHeader(type: type, clientNonce: wrongNonce ? 0 : request.clientNonce, serverNonce: 99, unixTime: request.unixTime)
         var response = DbpCodec.frame(secret: extensionSecret, header: header, payload: payload)
-        if mode == .badHMAC && request.type != .hello { response[32] ^= 1 }
+        if (mode == .badHMAC || mode == .badHMACSlowClose) && request.type != .hello { response[32] ^= 1 }
         inbox.append(mode == .truncatedCaps && request.type == .capabilities ? Data(response.prefix(64)) : response)
         if request.type == .openUDP {
             inbox.append(try DatagramFrame(payload: Data(), inbound: mode != .wrongDirection, sequence: 0).encoded())
@@ -95,14 +95,17 @@ private actor ExtensionTransport: RelayTransport {
         return try await withCheckedThrowingContinuation { waiting = (count, $0) }
     }
     func receive(maxLength: Int) async throws -> Data { try await receiveExactly(1) }
+    func finishSending() async throws {}
     func cancel() async {
         let wasWaiting = waiting != nil
         cancelled = true
         if let blockedSend { self.blockedSend = nil; blockedSend.resume(throwing: CancellationError()) }
         if let (_, continuation) = waiting { waiting = nil; continuation.resume(throwing: DroidBridgeError.relayProtocol("peer closed")) }
-        if wasWaiting && mode == .blockedQuery { try? await Task.sleep(for: .milliseconds(10)) }
+        if wasWaiting && (mode == .blockedQuery || mode == .blockedHello) { try? await Task.sleep(for: .milliseconds(10)) }
+        if mode == .badHMACSlowClose { try? await Task.sleep(for: .milliseconds(60)) }
     }
     var rawFrames: [Data] { sent.filter { !$0.starts(with: Data("DBP1".utf8)) } }
+    var waitingForInput: Bool { waiting != nil }
 }
 private final class DatagramRecorder: RelayDatagramDelegate, @unchecked Sendable {
     private let lock = NSLock()
@@ -176,6 +179,32 @@ func runExtensionRelayChecks(_ r: CheckRunner) async {
     let blockedClient = RelayExtensionClient(secret: extensionSecret, transportFactory: { blocked })
     do { _ = try await blockedClient.capabilities(timeout: .milliseconds(20)); r.check(false, "capability timeout must not downgrade to legacy") }
     catch { r.check(true, "capability timeout must not downgrade to legacy") }
+    let blockedHello = ExtensionTransport(.blockedHello)
+    let helloClient = RelayExtensionClient(secret: extensionSecret, transportFactory: { blockedHello })
+    do {
+        _ = try await helloClient.capabilities(timeout: .milliseconds(20))
+        r.check(false, "capability HELLO deadline must fail")
+    } catch {
+        r.check((error as? DroidBridgeError) == .relayTimedOut,
+                "capability HELLO deadline keeps timeout cause when cancellation wakes reader with EOF")
+    }
+    let cancelledHello = ExtensionTransport(.blockedHello)
+    let cancelledClient = RelayExtensionClient(secret: extensionSecret, transportFactory: { cancelledHello })
+    let query = Task { try await cancelledClient.capabilities(timeout: .seconds(2)) }
+    let waitDeadline = ContinuousClock.now + .seconds(1)
+    while !(await cancelledHello.waitingForInput), ContinuousClock.now < waitDeadline {
+        try? await Task.sleep(for: .milliseconds(2))
+    }
+    let waitingForCancellation = await cancelledHello.waitingForInput
+    r.check(waitingForCancellation, "cancelled capability test reaches blocked HELLO read")
+    query.cancel()
+    do { _ = try await query.value; r.check(false, "cancelled capability must not succeed") }
+    catch { r.check(error is CancellationError, "caller cancellation remains cancellation, not timeout or EOF") }
+    let slowClose = ExtensionTransport(.badHMACSlowClose)
+    let slowCloseClient = RelayExtensionClient(secret: extensionSecret, transportFactory: { slowClose })
+    do { _ = try await slowCloseClient.capabilities(timeout: .milliseconds(20)); r.check(false, "bad HMAC must fail") }
+    catch { r.check((error as? DroidBridgeError) == .relayAuthenticationFailed,
+                    "pre-deadline authentication failure survives cleanup past the deadline") }
     r.finish("extension-relay")
 }
 
@@ -206,6 +235,8 @@ func runExtensionFixtureChecks(_ r: CheckRunner) {
             case "capabilities_response":
                 let caps = try DbpCodec.decodeCapabilities(payload)
                 r.check(caps.flags == 0x27f && caps.uploadBytesPerSecond == 131072 && caps.downloadBytesPerSecond == 262144 && caps.burstBytes == 65536 && caps.nat64PrefixLength == 96 && caps.activeUDP == 7 && caps.udpDrops == 9, "canonical full capability profile offsets")
+            case "open_udp_association4": let encoded = try DbpCodec.encodeOpenUDPAssociation(family: 4); r.check(encoded == payload, "canonical association IPv4 OPEN")
+            case "open_udp_association6": let encoded = try DbpCodec.encodeOpenUDPAssociation(family: 6); r.check(encoded == payload, "canonical association IPv6 OPEN")
             case "open_tcp_ipv6": let encoded = try DbpCodec.encodeOpenTcp(destination: .ipv6("2606:4700:4700::1111",443)); r.check(encoded == payload, "canonical IPv6 TCP")
             case "open_udp_ipv4": let encoded = try DbpCodec.encodeOpenUDP(destination: .ipv4("1.1.1.1",443)); r.check(encoded == payload, "canonical IPv4 UDP")
             case "open_udp_ipv6": let encoded = try DbpCodec.encodeOpenUDP(destination: .ipv6("2606:4700:4700::1111",443)); r.check(encoded == payload, "canonical IPv6 UDP")

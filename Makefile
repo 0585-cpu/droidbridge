@@ -41,6 +41,7 @@ check-macos:
 	swift run --package-path macos/Shared Checks
 
 check-macos-usb:
+	bash scripts/check-usb-write-deadline.sh
 	swift run --package-path macos/USB USBChecks
 
 check-macos-helper:

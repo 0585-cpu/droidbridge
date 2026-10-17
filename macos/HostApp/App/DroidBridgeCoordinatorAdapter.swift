@@ -30,6 +30,7 @@ public final class DroidBridgeCoordinatorAdapter {
     public private(set) var tunnelMetrics: TunnelMetricsSnapshot?
     public private(set) var tunnelRunning = false
     public private(set) var tunnelMessage: String?
+    public private(set) var networkRecoveryMessage: String?
     public private(set) var helperOperationInProgress = false
 
     private let core: DroidBridgeCoordinatorCore
@@ -45,6 +46,8 @@ public final class DroidBridgeCoordinatorAdapter {
     private var monitorTask: Task<Void, Never>?
     private var statusTask: Task<Void, Never>?
     private var transportOperationInProgress = false
+    private var networkRecoveryInProgress = false
+    private var usbRecoveryPending = false
 
     public init(
         core: DroidBridgeCoordinatorCore,
@@ -62,6 +65,9 @@ public final class DroidBridgeCoordinatorAdapter {
         self.secretStore = secretStore
     }
 
+    /// Available even when a restarted app cannot get helper status.
+    public var canRestoreNetwork: Bool { helper.isInstalled }
+
     public var canPair: Bool {
         if case .deviceReady = state { return true }
         return false
@@ -69,7 +75,7 @@ public final class DroidBridgeCoordinatorAdapter {
 
     public var canPrepareRelay: Bool {
         guard let selectedDevice, let configured = try? configStore.read() else { return false }
-        return configured.deviceSerial == selectedDevice.serial
+        return configured.acceptsTransportCandidate(serial: selectedDevice.serial)
     }
 
     public var hasPairing: Bool { (try? configStore.read()) != nil }
@@ -219,7 +225,7 @@ public final class DroidBridgeCoordinatorAdapter {
         }
         do {
             guard let configuration = try configStore.read(),
-                  configuration.deviceSerial == device.serial else {
+                  configuration.acceptsTransportCandidate(serial: device.serial) else {
                 throw DroidBridgeError.invalidConfiguration("pair this Android device first")
             }
             guard var secret = try secretStore.load(peerId: configuration.keychainAccount) else {
@@ -263,6 +269,8 @@ public final class DroidBridgeCoordinatorAdapter {
 
     public func disconnect() async {
         guard !helperOperationInProgress, !transportOperationInProgress else { return }
+        usbRecoveryPending = false
+        await adb.suspendRecovery()
         if tunnelRunning {
             await stopTunnel()
             guard !tunnelRunning else { return }
@@ -272,11 +280,36 @@ public final class DroidBridgeCoordinatorAdapter {
         state = await core.state
     }
 
+    public var operationInProgress: Bool { helperOperationInProgress || transportOperationInProgress }
+
+    /// Quit must never silently do nothing. A stuck USB/relay operation (preparing a phone that
+    /// had vanished) made disconnect() return early while the kill-switch kept the Mac offline,
+    /// leaving reboot as the only exit. The helper serializes and fences Stop itself, so this
+    /// deliberately bypasses the app-side operation guards.
+    public func stopForQuit() async -> Bool {
+        usbRecoveryPending = false
+        await adb.suspendRecovery()
+        statusTask?.cancel()
+        statusTask = nil
+        do {
+            _ = try await helper.stop()
+            tunnelRunning = false
+            tunnelMetrics = nil
+            return true
+        } catch {
+            tunnelMessage = error.localizedDescription
+            networkRecoveryMessage = "종료 전에 네트워크 설정을 복원하지 못했어요. 종료를 다시 누르거나 연결 해제를 눌러 주세요."
+            return false
+        }
+    }
+
     public func startTunnel() async {
+        networkRecoveryMessage = nil
         guard !tunnelRunning, !transportOperationInProgress, beginHelperOperation() else { return }
         transportOperationInProgress = true
         defer { helperOperationInProgress = false; transportOperationInProgress = false }
         tunnelMessage = "Installing privileged helper…"
+        var requestedStart = false
         do {
             guard let configuration = try configStore.read() else {
                 throw DroidBridgeError.invalidConfiguration(
@@ -289,7 +322,7 @@ public final class DroidBridgeCoordinatorAdapter {
             defer { secret.resetBytes(in: 0..<secret.count) }
 
             guard let device = selectedDevice,
-                  device.serial == configuration.deviceSerial,
+                  configuration.acceptsTransportCandidate(serial: device.serial),
                   device.state == .authorized
             else {
                 throw DroidBridgeError.deviceUnauthorized(serial: configuration.deviceSerial)
@@ -314,7 +347,12 @@ public final class DroidBridgeCoordinatorAdapter {
                 },
                 startTunnel: {
                     self.tunnelMessage = "Starting fail-closed tunnel…"
-                    try await self.helper.start(config: configuration, secret: secret)
+                    requestedStart = true
+                    guard let verified = try self.configStore.read(), verified.deviceSerial == device.serial,
+                          verified.keychainAccount == configuration.keychainAccount else {
+                        throw DroidBridgeError.invalidConfiguration("verified USB configuration is missing")
+                    }
+                    try await self.helper.start(config: verified, secret: secret)
                 }
             )
             try await startup.run()
@@ -323,25 +361,38 @@ public final class DroidBridgeCoordinatorAdapter {
             startStatusPolling()
         } catch {
             let message = error.localizedDescription
-            tunnelRunning = false
+            // A timed-out XPC Start can still own network state. Keep Disconnect
+            // available until a successful status read proves the helper is stopped.
+            tunnelRunning = requestedStart
             await refreshTunnelStatus()
+            if tunnelRunning { startStatusPolling() }
             tunnelMessage = message
         }
     }
 
     public func stopTunnel() async {
         guard beginHelperOperation() else { return }
-        defer { helperOperationInProgress = false }
+        networkRecoveryInProgress = true
+        usbRecoveryPending = false
+        await adb.suspendRecovery()
+        defer { helperOperationInProgress = false; networkRecoveryInProgress = false }
+        statusTask?.cancel()
+        statusTask = nil
+        networkRecoveryMessage = "기존 네트워크 설정을 복원하고 있어요. 응답이 없으면 복구를 자동으로 이어갑니다."
         do {
-            try await helper.stop()
-            statusTask?.cancel()
-            statusTask = nil
+            let verified = try await helper.stop()
             tunnelRunning = false
             tunnelMetrics = nil
             tunnelMessage = nil
+            networkRecoveryMessage = verified
+                ? "DroidBridge의 경로·DNS·방화벽 설정을 해제했어요. Wi-Fi나 핫스팟으로 연결할 수 있어요."
+                : "연결을 해제했어요. 자동 복구와 복원 확인 기능을 사용하려면 네트워크 도구를 업데이트해 주세요."
         } catch {
             tunnelRunning = true
             tunnelMessage = error.localizedDescription
+            networkRecoveryMessage = "네트워크 복원을 확인하지 못했어요. 연결 해제를 다시 눌러 주세요."
+            tunnelMetrics = TunnelMetricsSnapshot(activeFlows: 0, uploadedBytes: 0, downloadedBytes: 0,
+                carrierName: nil, cellularAvailable: false, tunnelActive: true, runtimeStatus: .teardownFailed)
         }
     }
 
@@ -364,7 +415,7 @@ public final class DroidBridgeCoordinatorAdapter {
         return try await RelayPreparer(
             adb: adb,
             healthClient: HostRelayHealthClient(client: health)
-        ).prepare(device: device, secret: secret)
+        ).preparePaired(device: device, secret: secret, configuration: configuration, store: configStore)
     }
 
     public func reconnectTunnel() async {
@@ -373,9 +424,9 @@ public final class DroidBridgeCoordinatorAdapter {
         defer { helperOperationInProgress = false; transportOperationInProgress = false }
         do {
             guard let configuration = try configStore.read(), let device = selectedDevice,
-                  device.serial == configuration.deviceSerial,
+                  configuration.acceptsTransportCandidate(serial: device.serial),
                   var secret = try secretStore.load(peerId: configuration.keychainAccount) else {
-                throw DroidBridgeError.invalidConfiguration("connect the paired phone to the same USB port first")
+                throw DroidBridgeError.invalidConfiguration("connect the paired phone first")
             }
             defer { secret.resetBytes(in: 0..<secret.count) }
             tunnelMessage = "Reconnecting USB accessory…"
@@ -408,7 +459,7 @@ public final class DroidBridgeCoordinatorAdapter {
     }
 
     public func refreshTunnelStatus() async {
-        if let metrics = await helper.status() {
+        if let metrics = await helper.status(), !networkRecoveryInProgress {
             tunnelMetrics = metrics
             tunnelRunning = metrics.tunnelActive
             if tunnelRunning { startStatusPolling() }
@@ -448,9 +499,26 @@ public final class DroidBridgeCoordinatorAdapter {
         statusTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                if let metrics = await helper.status() {
+                if let metrics = await helper.status(), !Task.isCancelled, !helperOperationInProgress {
                     tunnelMetrics = metrics
                     tunnelRunning = metrics.tunnelActive
+                    if usbRecoveryPending {
+                        usbRecoveryPending = false
+                        if metrics.tunnelActive && metrics.runtimeStatus != .running
+                            && metrics.runtimeStatus != .teardownFailed {
+                            // The helper authenticates HEALTH again before restarting its engine.
+                            // No route/PF changes are made by USB recovery itself.
+                            do { try await helper.reconnect() }
+                            catch {
+                                guard !Task.isCancelled, !networkRecoveryInProgress else { return }
+                                tunnelMessage = error.localizedDescription
+                            }
+                            guard !Task.isCancelled, !networkRecoveryInProgress else { return }
+                            // A reconnect reply can arrive after Stop or a newer health result.
+                            // Fetch fresh status instead of displaying this earlier snapshot.
+                            continue
+                        }
+                    }
                     switch metrics.runtimeStatus {
                     case .running:
                         tunnelMessage = nil
@@ -459,7 +527,7 @@ public final class DroidBridgeCoordinatorAdapter {
                     case .blockedRelay:
                         tunnelMessage = "USB relay unavailable; traffic is blocked fail-closed."
                     case .reconnecting:
-                        tunnelMessage = "Retrying the cellular relay (1/2/4-second backoff)…"
+                        tunnelMessage = "휴대폰 응답을 기다리며 자동으로 다시 연결하고 있습니다…"
                     case .persistentBlockedCellular:
                         tunnelMessage = "Cellular is still unavailable. Reconnect or stop the tunnel."
                     case .persistentBlockedRelay:
@@ -475,6 +543,12 @@ public final class DroidBridgeCoordinatorAdapter {
                 try? await Task.sleep(for: .seconds(2))
             }
         }
+    }
+
+    public func usbSessionRecovered() {
+        guard tunnelRunning, !networkRecoveryInProgress else { return }
+        usbRecoveryPending = true
+        startStatusPolling()
     }
 
     private static func connectForPairing() async throws -> PairingConnection {

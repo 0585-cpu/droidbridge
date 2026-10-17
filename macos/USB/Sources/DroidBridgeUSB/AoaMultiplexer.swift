@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import OSLog
 
 public protocol AoaByteTransport: AnyObject, Sendable {
     func readChunk() throws -> Data?
@@ -16,12 +17,29 @@ public final class AoaMultiplexer: @unchecked Sendable {
         let connection: NWConnection
         var opened = false
         var reading = false
+        var pendingRead: (data: Data?, complete: Bool)?
         var localFIN = false
         var remoteFIN = false
         var pendingWrites = 0
         var sendCredit = AoaFrame.initialCredit
         var receiveCredit = AoaFrame.initialCredit
+        var receivedBytes: UInt64 = 0
+        var sentBytes: UInt64 = 0
+        var consumedBytes: UInt64 = 0
+        var windowUpdate = AoaWindowUpdate()
+        var refreshedConsumed: UInt64 = 0
+        var peerConsumedBytes: UInt64 = 0
+        var lastReceived = ContinuousClock.now
+        var idleReported = false
         init(_ connection: NWConnection) { self.connection = connection }
+    }
+    // Mutable only on the mux queue, until the writer takes an immutable copy.
+    // Absolute WINDOW updates and unsent PINGs can replace obsolete queued work.
+    private final class PendingWrite: @unchecked Sendable {
+        var data: Data
+        let kind: AoaFrame.Kind
+        let id: UInt32
+        init(_ data: Data, kind: AoaFrame.Kind, id: UInt32) { self.data = data; self.kind = kind; self.id = id }
     }
     private var transport: (any AoaByteTransport)?
     private let transportFactory: @Sendable () throws -> any AoaByteTransport
@@ -33,12 +51,23 @@ public final class AoaMultiplexer: @unchecked Sendable {
     private var listeners: [NWListener] = []
     private var nextID: UInt32 = 1
     private var queuedFrames = 0
+    private var pausedReads: Set<UInt32> = []
+    private var pendingWindows: [UInt32: PendingWrite] = [:]
+    private var pendingPing: PendingWrite?
+    // FIFO of frames not yet taken by the writer; it drains several per bulk write.
+    private var outbox: [PendingWrite] = []
+    private var writerActive = false
+    private var windowTimer: DispatchWorkItem?
+    private let writerHighWater = 256
+    private let writerLowWater = 128
     private var stopped = false
+    private var failureReason: String?
     private var sessionReady = false
     private let handshake = DispatchSemaphore(value: 0)
     private let nonce = withUnsafeBytes(of: UUID().uuid) { Data($0) }
     private var lastPong = ContinuousClock.now
     private var enabled: Set<AoaFrame.Service> = [.relay, .pairing]
+    private let logger = Logger(subsystem: "io.droidbridge", category: "USBStream")
 
     public init(transport: any AoaByteTransport, disconnected: @escaping @Sendable (String) -> Void = { _ in }) {
         self.transportFactory = { transport }; self.disconnected = disconnected
@@ -63,8 +92,15 @@ public final class AoaMultiplexer: @unchecked Sendable {
         do {
             let relay = try listen(port: relayPort, service: .relay)
             let pairing = try listen(port: pairingPort, service: .pairing)
+            guard queue.sync(execute: { !stopped }) else { throw AoaError.usb("closed") }
             let transport = try transportFactory()
-            queue.sync { self.transport = transport; send(.reset, id: 0, payload: nonce) }
+            let accepted = queue.sync {
+                guard !stopped else { return false }
+                self.transport = transport
+                send(.reset, id: 0, payload: nonce)
+                return true
+            }
+            guard accepted else { transport.close(); throw AoaError.usb("closed") }
             Thread.detachNewThread { [self] in
                 do {
                     var decoder = AoaFrameDecoder()
@@ -80,7 +116,7 @@ public final class AoaMultiplexer: @unchecked Sendable {
                 } catch { queue.async { self.fail(error.localizedDescription) } }
             }
             guard handshake.wait(timeout: .now() + 60) == .success, isConnected else {
-                throw AoaError.usb("open DroidBridge on Android and allow USB access, then retry")
+                throw AoaError.usb(queue.sync { failureReason } ?? "open DroidBridge on Android and allow USB access, then retry")
             }
             queue.async { self.heartbeat() }
             return Ports(relay: relay, pairing: pairing)
@@ -108,7 +144,12 @@ public final class AoaMultiplexer: @unchecked Sendable {
             }
         }
         listener.newConnectionHandler = { [weak self] connection in self?.accept(connection, service: service) }
-        queue.sync { listeners.append(listener); listener.start(queue: queue) }
+        let accepted = queue.sync {
+            guard !stopped else { return false }
+            listeners.append(listener); listener.start(queue: queue)
+            return true
+        }
+        guard accepted else { listener.cancel(); throw AoaError.usb("closed") }
         let signalled = ready.wait(timeout: .now() + 5) == .success
         let boundPort: NWEndpoint.Port? = queue.sync {
             // NWListener.port can contain the requested port even when bind failed.
@@ -123,7 +164,7 @@ public final class AoaMultiplexer: @unchecked Sendable {
 
     private func accept(_ connection: NWConnection, service: AoaFrame.Service) {
         guard !stopped, sessionReady, enabled.contains(service), streams.count < 256,
-              nextID <= Int32.max else { connection.cancel(); return }
+              !writerBackpressured, nextID <= Int32.max else { connection.cancel(); return }
         let id = nextID; nextID += 2
         let stream = Stream(connection)
         streams[id] = stream
@@ -141,23 +182,42 @@ public final class AoaMultiplexer: @unchecked Sendable {
 
     private func readLocal(_ id: UInt32) {
         guard let stream = streams[id], stream.opened, !stream.reading, !stream.localFIN,
-              stream.sendCredit > 0, !stopped else { return }
+              !stopped else { return }
+        guard !writerBackpressured else { pausedReads.insert(id); return }
+        pausedReads.remove(id)
+        if let pending = stream.pendingRead {
+            stream.pendingRead = nil
+            forwardLocalRead(id, stream: stream, data: pending.data, complete: pending.complete)
+            return
+        }
+        guard stream.sendCredit > 0 else { return }
         stream.reading = true
         stream.connection.receive(minimumIncompleteLength: 1,
-                                  maximumLength: min(AoaFrame.maximumPayload, stream.sendCredit)) { [weak self] data, _, complete, error in
-            guard let self, let current = streams[id], current === stream else { return }
+                                  maximumLength: min(AoaFrame.sendPayload, stream.sendCredit)) { [weak self] data, _, complete, error in
+            guard let self, let current = streams[id], current === stream, !stopped else { return }
             stream.reading = false
             if error != nil { closeStream(id, notify: true); return }
-            if let data, !data.isEmpty {
-                stream.sendCredit -= data.count
-                send(.data, id: id, payload: data)
-            }
-            if complete {
-                stream.localFIN = true
-                send(.fin, id: id)
-                finishIfDrained(id)
-            } else { readLocal(id) }
+            // One outstanding receive per stream may finish after pausing. Keep
+            // that bounded result (at most 16 KiB) until the writer has space.
+            // Idle receives do not reserve global slots and starve other streams.
+            if writerBackpressured {
+                stream.pendingRead = (data, complete)
+                pausedReads.insert(id)
+            } else { forwardLocalRead(id, stream: stream, data: data, complete: complete) }
         }
+    }
+
+    private func forwardLocalRead(_ id: UInt32, stream: Stream, data: Data?, complete: Bool) {
+        if let data, !data.isEmpty {
+            stream.sendCredit -= data.count
+            stream.sentBytes += UInt64(data.count)
+            send(.data, id: id, payload: data)
+        }
+        if complete {
+            stream.localFIN = true
+            send(.fin, id: id)
+            finishIfDrained(id)
+        } else { readLocal(id) }
     }
 
     private func handle(_ frame: AoaFrame) throws {
@@ -181,23 +241,32 @@ public final class AoaMultiplexer: @unchecked Sendable {
             stream.opened = true; readLocal(id)
         case .close: closeStream(id, notify: false)
         case .window:
-            let amount = Int(AoaFrame.number(frame.payload))
-            guard stream.opened, stream.sendCredit <= AoaFrame.initialCredit - amount else {
+            let consumed = AoaFrame.consumedCount(frame.payload)
+            guard stream.opened, consumed <= stream.sentBytes else {
                 throw AoaError.protocolViolation("credit inflation")
             }
-            stream.sendCredit += amount; readLocal(id)
+            guard consumed > stream.peerConsumedBytes else { return }
+            stream.peerConsumedBytes = consumed
+            stream.sendCredit = AoaFrame.initialCredit - Int(stream.sentBytes - consumed)
+            readLocal(id)
         case .data:
             guard stream.opened, !stream.remoteFIN, frame.payload.count <= stream.receiveCredit else {
                 throw AoaError.protocolViolation("DATA outside receive window")
             }
             stream.receiveCredit -= frame.payload.count
+            stream.receivedBytes += UInt64(frame.payload.count)
+            stream.lastReceived = .now
+            stream.idleReported = false
             stream.pendingWrites += 1
             stream.connection.send(content: frame.payload, completion: .contentProcessed { [weak self] error in
                 guard let self, streams[id] === stream else { return }
                 stream.pendingWrites -= 1
                 if error != nil { closeStream(id, notify: true); return }
                 stream.receiveCredit += frame.payload.count
-                send(.window, id: id, payload: AoaFrame.bytes(UInt32(frame.payload.count)))
+                stream.consumedBytes += UInt64(frame.payload.count)
+                if stream.windowUpdate.consumed(stream.consumedBytes, now: ProcessInfo.processInfo.systemUptime) {
+                    sendWindow(id, stream)
+                } else { armWindowTimer() }
                 finishIfDrained(id)
             })
         case .fin:
@@ -219,26 +288,110 @@ public final class AoaMultiplexer: @unchecked Sendable {
     }
     private func closeStream(_ id: UInt32, notify: Bool) {
         guard let stream = streams.removeValue(forKey: id) else { return }
+        pausedReads.remove(id)
         stream.connection.cancel()
         if notify { send(.close, id: id) }
     }
+
+    private var writerBackpressured: Bool { queuedFrames >= writerHighWater }
+
+    private func sendWindow(_ id: UInt32, _ stream: Stream) {
+        send(.window,id:id,payload:AoaFrame.consumedBytes(stream.consumedBytes))
+        stream.windowUpdate.sent(stream.consumedBytes)
+    }
+
+    /// One timer covers all sparse streams. Later packets never postpone an earlier deadline.
+    private func armWindowTimer() {
+        guard !stopped, windowTimer == nil else { return }
+        var first: TimeInterval?
+        for stream in streams.values {
+            if let due = stream.windowUpdate.deadline { first = min(first ?? due,due) }
+        }
+        guard let first else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !stopped else { return }
+            windowTimer = nil
+            let now = ProcessInfo.processInfo.systemUptime
+            for (id,stream) in streams where stream.windowUpdate.isDue(now) { sendWindow(id,stream) }
+            armWindowTimer()
+        }
+        windowTimer = work
+        queue.asyncAfter(deadline:.now()+max(0,first-ProcessInfo.processInfo.systemUptime),execute:work)
+    }
+
+    private func resumeLocalReads() {
+        guard !stopped, !pausedReads.isEmpty,
+              queuedFrames <= writerLowWater else { return }
+        let ready = pausedReads
+        pausedReads.removeAll(keepingCapacity: true)
+        for id in ready { readLocal(id) }
+    }
+
     private func send(_ kind: AoaFrame.Kind, id: UInt32, service: AoaFrame.Service = .none, payload: Data = Data()) {
         guard !stopped, let transport else { return }
-        guard queuedFrames < 1024 else { fail("USB writer queue exceeded"); return }
         do {
             let data = try AoaFrame(type: kind, streamID: id, service: service, payload: payload).encoded()
+            if kind == .window, let pending = pendingWindows[id] {
+                pending.data = data
+                return
+            }
+            if kind == .ping, pendingPing != nil { return }
+            // The remaining space is reserved for credit, close and heartbeat
+            // traffic while producers are paused; never discard ordered DATA.
+            guard queuedFrames < 1024 else { fail("USB writer queue exceeded"); return }
+            let pending = PendingWrite(data, kind: kind, id: id)
+            if kind == .window { pendingWindows[id] = pending }
+            if kind == .ping { pendingPing = pending }
             queuedFrames += 1
-            writer.async { [self] in
-                do { try transport.write(data); queue.async { self.queuedFrames -= 1 } }
-                catch { queue.async { self.queuedFrames -= 1; self.fail(error.localizedDescription) } }
+            outbox.append(pending)
+            if !writerActive {
+                writerActive = true
+                writer.async { [self] in drainOutbox(transport) }
             }
         } catch { fail(error.localizedDescription) }
+    }
+
+    /// Writer queue only. Packs queued frames into one bulk write: WINDOW/FIN/PING/small DATA
+    /// otherwise each cost a reliable record, two digests and a USB transfer.
+    private func drainOutbox(_ transport: any AoaByteTransport) {
+        while true {
+            // A preceding write can fail while more frames are already queued.
+            // Synchronize with its failure/Stop before touching the transport again.
+            let batch: (bytes: Data, count: Int)? = queue.sync {
+                guard !stopped, !outbox.isEmpty else { writerActive = false; return nil }
+                var bytes = Data()
+                var count = 0
+                for pending in outbox {
+                    if count > 0 && bytes.count + pending.data.count > AoaFrame.writeBudget { break }
+                    if pending.kind == .window, pendingWindows[pending.id] === pending { pendingWindows.removeValue(forKey: pending.id) }
+                    if pending.kind == .ping, pendingPing === pending { pendingPing = nil }
+                    bytes.append(pending.data)
+                    count += 1
+                }
+                outbox.removeFirst(count)
+                return (bytes, count)
+            }
+            guard let batch else { return }
+            do { try transport.write(batch.bytes); queue.async { self.writeFinished(batch.count) } }
+            catch { queue.async { self.fail(error.localizedDescription); self.writeFinished(batch.count) }; return }
+        }
+    }
+
+    private func writeFinished(_ count: Int) {
+        queuedFrames -= count
+        resumeLocalReads()
     }
     private func fail(_ message: String) {
         guard !stopped else { return }
         stopped = true
+        windowTimer?.cancel(); windowTimer = nil
+        failureReason = message
         listeners.forEach { $0.cancel() }; listeners.removeAll()
         streams.values.forEach { $0.connection.cancel() }; streams.removeAll()
+        pausedReads.removeAll()
+        pendingWindows.removeAll()
+        pendingPing = nil
+        outbox.removeAll()
         // close must wake a blocked USB reader/writer; no callback is allowed to re-open a stream.
         transport?.close()
         handshake.signal()
@@ -247,7 +400,25 @@ public final class AoaMultiplexer: @unchecked Sendable {
 
     private func heartbeat() {
         guard !stopped else { return }
-        guard lastPong.duration(to: .now) < .seconds(8) else { fail("Android USB relay stopped responding"); return }
+        // Outlast the reliable channel's no-progress deadline, so it decides first and a
+        // frozen-then-resumed phone keeps its streams.
+        guard lastPong.duration(to: .now) < .seconds(ReliableUsbState.noProgressSeconds + 10) else { fail("Android USB relay stopped responding"); return }
+        // Repeat absolute consumption, including when DATA is stalled. A missing WINDOW no
+        // longer leaks the stream's credit permanently; duplicate refreshes are idempotent.
+        // Only consumption not repeated yet: idle streams cost nothing, while a lost update
+        // is still repeated once without new data.
+        for (id, stream) in streams where stream.opened && stream.consumedBytes > stream.refreshedConsumed {
+            sendWindow(id, stream)
+            stream.refreshedConsumed = stream.consumedBytes
+        }
+        // One metadata-only record per idle interval of a large stream. This distinguishes
+        // downstream pressure from missing upstream data without changing flow control.
+        for (id, stream) in streams where stream.receivedBytes >= 1_048_576 && !stream.remoteFIN && !stream.idleReported {
+            if stream.lastReceived.duration(to: .now) >= .seconds(10) {
+                stream.idleReported = true
+                logger.info("Large stream idle: id=\(id) rx=\(stream.receivedBytes) tx=\(stream.sentBytes) rxCredit=\(stream.receiveCredit) txCredit=\(stream.sendCredit) pendingWrites=\(stream.pendingWrites) queuedFrames=\(self.queuedFrames)")
+            }
+        }
         send(.ping, id: 0)
         queue.asyncAfter(deadline: .now() + 2) { [weak self] in self?.heartbeat() }
     }

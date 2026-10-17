@@ -7,6 +7,9 @@ final class TestUSBWire: AoaByteTransport, @unchecked Sendable {
     private var incoming: [Data] = []
     private var outgoing: [Data] = []
     private var closed = false
+    private var writes = 0
+    var isClosed: Bool { condition.lock(); defer { condition.unlock() }; return closed }
+    var writeCount: Int { condition.lock(); defer { condition.unlock() }; return writes }
     func readChunk() throws -> Data? {
         condition.lock(); defer { condition.unlock() }
         while incoming.isEmpty && !closed { condition.wait() }
@@ -15,21 +18,22 @@ final class TestUSBWire: AoaByteTransport, @unchecked Sendable {
     func write(_ data: Data) throws {
         condition.lock(); defer { condition.unlock() }
         if closed { throw AoaError.usb("closed") }
+        writes += 1
+        // One write may carry several frames (the mux packs its queue), like the real wire.
         var decoder = AoaFrameDecoder()
-        if let frame = try decoder.append(data).first, frame.type == .ping {
-            incoming.append(try AoaFrame(type: .pong, streamID: 0).encoded())
-            condition.broadcast()
-            return
+        for frame in try decoder.append(data) {
+            if frame.type == .ping { incoming.append(try AoaFrame(type: .pong, streamID: 0).encoded()) }
+            else { outgoing.append(try frame.encoded()) }
         }
-        outgoing.append(data); condition.broadcast()
+        condition.broadcast()
     }
     func close() { condition.lock(); closed = true; condition.broadcast(); condition.unlock() }
     func feed(_ frame: AoaFrame) {
         condition.lock(); incoming.append(frame.encoded()); condition.broadcast(); condition.unlock()
     }
-    func next() throws -> AoaFrame {
+    func next(timeout: TimeInterval = 5) throws -> AoaFrame {
         condition.lock(); defer { condition.unlock() }
-        let limit = Date().addingTimeInterval(5)
+        let limit = Date().addingTimeInterval(timeout)
         while outgoing.isEmpty && !closed {
             guard condition.wait(until: limit) else { throw AoaError.usb("test timed out") }
         }
@@ -56,6 +60,8 @@ func connectLocal(_ port: UInt16) throws -> Int32 {
 }
 
 func runMuxChecks() throws {
+    try runLostWindowCheck()
+    try runStartupCancellationCheck()
     let wire = TestUSBWire()
     let mux = AoaMultiplexer(transport: wire)
     Thread.detachNewThread {
@@ -81,7 +87,7 @@ func runMuxChecks() throws {
     let count = Darwin.recv(client, &reply, 3, MSG_WAITALL)
     check(count == 3 && reply == [9,8,7], "remote payload reaches real socket")
     let credit = try wire.next()
-    check(credit.type == .window && AoaFrame.number(credit.payload) == 3, "credit follows consumed data")
+    check(credit.type == .window && AoaFrame.consumedCount(credit.payload) == 3, "credit follows consumed data")
     _ = Darwin.shutdown(client, SHUT_WR)
     let fin = try wire.next()
     check(fin.type == .fin, "local half-close preserved")
@@ -94,11 +100,59 @@ func runMuxChecks() throws {
     if next.type == .close { next = try wire.next() }
     check(next.type == .open && next.service == .pairing, "pairing uses separate stream")
     wire.feed(try AoaFrame(type: .openOK, streamID: next.streamID))
-    wire.feed(try AoaFrame(type: .window, streamID: next.streamID, payload: AoaFrame.bytes(1)))
+    wire.feed(try AoaFrame(type: .window, streamID: next.streamID, payload: AoaFrame.consumedBytes(1)))
     check(Darwin.recv(paired, &reply, 1, 0) == 0, "credit inflation closes transport")
     print("AOA real-loopback multiplex checks passed")
     try runBulkChecks()
     try runOccupiedPortCheck()
+}
+
+private func runLostWindowCheck() throws {
+    let wire = TestUSBWire()
+    let mux = AoaMultiplexer(transport: wire)
+    Thread.detachNewThread {
+        do {
+            let reset = try wire.next()
+            wire.feed(try AoaFrame(type: .resetOK, streamID: 0, payload: reset.payload))
+        } catch { fatalError("reset failed: \(error)") }
+    }
+    let ports = try mux.start(relayPort: 0, pairingPort: 0)
+    defer { mux.stop() }
+    let client = try connectLocal(ports.relay)
+    defer { Darwin.close(client) }
+    let opened = try wire.next()
+    wire.feed(try AoaFrame(type: .openOK, streamID: opened.streamID))
+    let payload = Data(repeating: 7, count: 16384)
+    wire.feed(try AoaFrame(type: .data, streamID: opened.streamID, payload: payload))
+    var received = [UInt8](repeating: 0, count: payload.count)
+    check(Darwin.recv(client, &received, received.count, MSG_WAITALL) == payload.count, "window recovery payload")
+    let lost = try wire.next(timeout:0.5) // Sparse credit must not wait for the 2s refresh.
+    let repeated = try wire.next()
+    check(repeated.type == .window && repeated.payload == lost.payload, "lost window is repeated without new data")
+    check(mux.isConnected, "window recovery retains the USB session")
+    print("AOA lost-window recovery check passed")
+}
+
+private func runStartupCancellationCheck() throws {
+    let wire = TestUSBWire()
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    let finished = DispatchSemaphore(value: 0)
+    let mux = AoaMultiplexer(transportFactory: {
+        entered.signal()
+        release.wait()
+        return wire
+    })
+    Thread.detachNewThread {
+        do { _ = try mux.start(relayPort: 0, pairingPort: 0); fatalError("cancelled start succeeded") }
+        catch { finished.signal() }
+    }
+    check(entered.wait(timeout: .now() + 3) == .success, "transport open started")
+    mux.stop()
+    release.signal()
+    check(finished.wait(timeout: .now() + 3) == .success, "Stop unblocks pending handshake")
+    check(wire.isClosed, "USB opened after Stop must be closed, not leaked")
+    print("AOA Stop-during-open resource cleanup check passed")
 }
 
 private func runBulkChecks() throws {
@@ -133,7 +187,21 @@ private func runBulkChecks() throws {
         let frame = try wire.next()
         check(frame.type == .data, "bulk upload is DATA")
         uploaded.append(frame.payload)
-        wire.feed(try AoaFrame(type: .window, streamID: opened.streamID, payload: AoaFrame.bytes(UInt32(frame.payload.count))))
+        if uploaded.count % AoaFrame.initialCredit == 0 {
+            if uploaded.count < payload.count {
+                do {
+                    _ = try wire.next(timeout: 0.3)
+                    fatalError("FAIL: sender exceeded its window before the next cumulative ACK")
+                } catch AoaError.usb(let message) {
+                    check(message == "test timed out", "credit wait must not close transport")
+                }
+            }
+            // Drop every intermediate update. A cumulative refresh restores the whole window.
+            wire.feed(try AoaFrame(type: .window, streamID: opened.streamID, payload: AoaFrame.consumedBytes(UInt64(uploaded.count))))
+            // Repeating or delaying a refresh must never inflate credit or kill the session.
+            wire.feed(try AoaFrame(type: .window, streamID: opened.streamID, payload: AoaFrame.consumedBytes(UInt64(uploaded.count))))
+            wire.feed(try AoaFrame(type: .window, streamID: opened.streamID, payload: AoaFrame.consumedBytes(0)))
+        }
     }
     check(uploaded == payload, "bulk upload preserves bytes across receive windows")
     let uploadFIN = try wire.next()
@@ -155,7 +223,7 @@ private func runBulkChecks() throws {
         let chunk = payload.subdata(in: offset..<(offset + AoaFrame.maximumPayload))
         wire.feed(try AoaFrame(type: .data, streamID: opened.streamID, payload: chunk))
         let credit = try wire.next()
-        check(credit.type == .window && AoaFrame.number(credit.payload) == chunk.count, "bulk reply returns consumed credit")
+        check(credit.type == .window && AoaFrame.consumedCount(credit.payload) == UInt64(offset + chunk.count), "bulk reply returns consumed credit")
     }
     wire.feed(try AoaFrame(type: .fin, streamID: opened.streamID))
     check(drained.wait(timeout: .now() + 5) == .success, "bulk reply reaches EOF")

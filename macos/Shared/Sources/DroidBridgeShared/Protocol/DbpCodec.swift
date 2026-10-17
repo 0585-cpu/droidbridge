@@ -6,7 +6,7 @@ public enum DbpMessageType: UInt8, Sendable {
     case openTcp = 0x10, openOk = 0x11, openError = 0x12
     case dnsQuery = 0x20, dnsResponse = 0x21
     case health = 0x30, healthResponse = 0x31, capabilities = 0x32, capabilitiesResponse = 0x33
-    case openUDP = 0x40, openUDPOk = 0x41, openUDPError = 0x42, udpClose = 0x43
+    case openUDP = 0x40, openUDPOk = 0x41, openUDPError = 0x42, udpClose = 0x43, openUDPAssociation = 0x44
     case icmpEcho = 0x60, icmpResponse = 0x61, icmpError = 0x62
 }
 
@@ -84,7 +84,7 @@ public enum DbpCodec {
         case .openError: return 1
         case .openTcp, .openUDP: return 4
         case .openUDPOk: return 8
-        case .openUDPError: return 4
+        case .openUDPError, .openUDPAssociation: return 4
         case .icmpEcho: return 24
         case .icmpResponse: return 32
         case .icmpError: return 6

@@ -13,6 +13,13 @@ public struct TunnelRuntimeConfiguration: Codable, Equatable, Sendable {
     public static let loopback = "127.0.0.1"
     public static let relayPortB1: UInt16 = 27183
 
+    /// A USB location is not peer identity. A candidate at another AOA port must still
+    /// authenticate with the existing pairing secret before its location is persisted.
+    public func acceptsTransportCandidate(serial: String) -> Bool {
+        serial == deviceSerial || (serial.hasPrefix("aoa:") && serial.count > 4
+            && deviceSerial.hasPrefix("aoa:") && deviceSerial.count > 4)
+    }
+
     public init(
         deviceSerial: String,
         relayHost: String,

@@ -35,34 +35,34 @@ struct RelaySession: Sendable {
     }
 }
 
-/// Closing the underlying transport releases blocked I/O before the task group joins its children.
-private final class RelayDeadlineState: @unchecked Sendable {
-    private let lock = NSLock()
-    private var expired = false
-    func expire() { lock.withLock { expired = true } }
-    func check() throws {
-        try Task.checkCancellation()
-        if lock.withLock({ expired }) { throw DroidBridgeError.relayTimedOut }
-    }
-}
-
+/// Choose the outcome before closing I/O, then release blocked readers before joining children.
 func relayDeadline<T: Sendable>(_ transport: any RelayTransport, timeout: Duration,
                                 operation: @escaping @Sendable () async throws -> T) async throws -> T {
-    let deadline = RelayDeadlineState()
     return try await withTaskCancellationHandler {
         try await withThrowingTaskGroup(of: T.self) { group in
             group.addTask {
-                do { let result = try await operation(); try deadline.check(); await transport.cancel(); try deadline.check(); return result }
-                catch { await transport.cancel(); throw error }
+                try Task.checkCancellation()
+                let result = try await operation()
+                try Task.checkCancellation()
+                return result
             }
             group.addTask {
                 try await Task.sleep(for: timeout)
-                deadline.expire()
-                await transport.cancel()
                 throw DroidBridgeError.relayTimedOut
             }
             defer { group.cancelAll() }
-            return try await group.next()!
+            do {
+                let result = try await group.next()!
+                await transport.cancel()
+                try Task.checkCancellation()
+                return result
+            } catch {
+                // Timeout-induced EOF cannot win: the outcome is already selected.
+                // Cleanup crossing the deadline cannot rewrite an authentication failure.
+                await transport.cancel()
+                try Task.checkCancellation()
+                throw error
+            }
         }
     } onCancel: { Task { await transport.cancel() } }
 }

@@ -5,6 +5,7 @@ public enum HelperClientError: LocalizedError {
     case unavailable
     case rejected(String)
     case invalidStatus
+    case timedOut
 
     public var errorDescription: String? {
         switch self {
@@ -12,6 +13,8 @@ public enum HelperClientError: LocalizedError {
             return "the privileged helper is unavailable"
         case let .rejected(message):
             return message
+        case .timedOut:
+            return "네트워크 복구 응답이 늦어지고 있어요. 연결 해제를 다시 눌러 주세요."
         case .invalidStatus:
             return "the helper returned an invalid status payload"
         }
@@ -21,6 +24,10 @@ public enum HelperClientError: LocalizedError {
 private final class XPCReplyGate: @unchecked Sendable {
     private let lock = NSLock()
     private var completed = false
+
+    func deadline(_ seconds: TimeInterval, _ body: @escaping @Sendable () -> Void) {
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { [self] in once(body) }
+    }
 
     func once(_ body: () -> Void) {
         let shouldRun = lock.withLock {
@@ -43,6 +50,10 @@ public final class HelperClient: @unchecked Sendable {
             bundleID: "io.droidbridge.helper"
         )
         installer = ManualHelperInstaller(teamID: resolvedTeamID)
+    }
+
+    public var isInstalled: Bool {
+        FileManager.default.isExecutableFile(atPath: "/Library/PrivilegedHelperTools/io.droidbridge.helper")
     }
 
     public func install() async throws {
@@ -71,10 +82,11 @@ public final class HelperClient: @unchecked Sendable {
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let gate = XPCReplyGate()
+            gate.deadline(15) { continuation.resume(throwing: HelperClientError.timedOut) }
             guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
                 gate.once { continuation.resume(throwing: error) }
             }) as? DroidBridgeHelperProtocol else {
-                continuation.resume(throwing: HelperClientError.unavailable)
+                gate.once { continuation.resume(throwing: HelperClientError.unavailable) }
                 return
             }
             proxy.startTunnel(configJSON: payload, secret: secret) { success, message in
@@ -91,23 +103,31 @@ public final class HelperClient: @unchecked Sendable {
         }
     }
 
-    public func stop() async throws {
+    @discardableResult
+    public func stop() async throws -> Bool {
+        try await HelperStopRetry.run { [self] in try await stopAttempt() }
+        // An older installed helper can Stop normally but does not verify restoration.
+        return installer.installedHelperMatchesEmbedded()
+    }
+
+    private func stopAttempt() async throws {
         let connection = makeConnection()
         defer { connection.invalidate() }
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let gate = XPCReplyGate()
+            gate.deadline(3) { continuation.resume(throwing: HelperClientError.timedOut) }
             guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
                 gate.once { continuation.resume(throwing: error) }
             }) as? DroidBridgeHelperProtocol else {
-                continuation.resume(throwing: HelperClientError.unavailable)
+                gate.once { continuation.resume(throwing: HelperClientError.unavailable) }
                 return
             }
             proxy.stopTunnel { success in
                 gate.once {
                     success
                         ? continuation.resume()
-                        : continuation.resume(throwing: HelperClientError.rejected("the helper retained fail-closed protection because teardown failed"))
+                        : continuation.resume(throwing: HelperClientError.rejected("네트워크 설정 복원을 확인하지 못했어요. 연결 해제를 다시 눌러 주세요."))
                 }
             }
         }
@@ -119,10 +139,11 @@ public final class HelperClient: @unchecked Sendable {
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let gate = XPCReplyGate()
+            gate.deadline(3) { continuation.resume(throwing: HelperClientError.timedOut) }
             guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
                 gate.once { continuation.resume(throwing: error) }
             }) as? DroidBridgeHelperProtocol else {
-                continuation.resume(throwing: HelperClientError.unavailable)
+                gate.once { continuation.resume(throwing: HelperClientError.unavailable) }
                 return
             }
             proxy.reconnectTunnel { success, message in
@@ -147,10 +168,11 @@ public final class HelperClient: @unchecked Sendable {
 
         return await withCheckedContinuation { continuation in
             let gate = XPCReplyGate()
+            gate.deadline(2) { continuation.resume(returning: nil) }
             guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
                 gate.once { continuation.resume(returning: nil) }
             }) as? DroidBridgeHelperProtocol else {
-                continuation.resume(returning: nil)
+                gate.once { continuation.resume(returning: nil) }
                 return
             }
             proxy.status { data in
@@ -172,10 +194,11 @@ public final class HelperClient: @unchecked Sendable {
 
         return await withCheckedContinuation { continuation in
             let gate = XPCReplyGate()
+            gate.deadline(2) { continuation.resume(returning: false) }
             guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
                 gate.once { continuation.resume(returning: false) }
             }) as? DroidBridgeHelperProtocol else {
-                continuation.resume(returning: false)
+                gate.once { continuation.resume(returning: false) }
                 return
             }
             proxy.installStatus { installed in
@@ -199,10 +222,11 @@ public final class HelperClient: @unchecked Sendable {
         defer { connection.invalidate() }
         return await withCheckedContinuation { continuation in
             let gate = XPCReplyGate()
+            gate.deadline(2) { continuation.resume(returning: false) }
             guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
                 gate.once { continuation.resume(returning: false) }
             }) as? DroidBridgeHelperProtocol else {
-                continuation.resume(returning: false)
+                gate.once { continuation.resume(returning: false) }
                 return
             }
             proxy.installStatus { installed in

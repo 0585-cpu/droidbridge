@@ -49,7 +49,12 @@ func db_bridge_open_ip(_ ctx: UnsafeMutableRawPointer?, _ flow: UInt32, _ family
 func db_bridge_open_udp(_ ctx: UnsafeMutableRawPointer?, _ flow: UInt32, _ family: UInt8, _ dst: UnsafePointer<UInt8>?, _ port: UInt16) {
     guard let ctx, let dst, family == 4 || family == 6 else { return }
     let bridge = Unmanaged<EngineBridge>.fromOpaque(ctx).takeUnretainedValue()
-    bridge.delegate?.engineOpenUDP(flow, dstIP: Array(UnsafeBufferPointer(start: dst, count: family == 4 ? 4 : 16)), port: port)
+    bridge.delegate?.engineOpenUDP(flow, dstIP: Array(UnsafeBufferPointer(start: dst, count: family == 4 ? 4 : 16)), port: port, sourcePort: 0, sourceIP: [])
+}
+func db_bridge_open_udp_endpoint(_ ctx: UnsafeMutableRawPointer?, _ flow: UInt32, _ family: UInt8, _ dst: UnsafePointer<UInt8>?, _ port: UInt16, _ sourcePort: UInt16, _ src: UnsafePointer<UInt8>?) {
+    guard let ctx, let dst, let src, family == 4 || family == 6 else { return }
+    let bridge = Unmanaged<EngineBridge>.fromOpaque(ctx).takeUnretainedValue()
+    bridge.delegate?.engineOpenUDP(flow, dstIP: Array(UnsafeBufferPointer(start: dst, count: family == 4 ? 4 : 16)), port: port, sourcePort: sourcePort, sourceIP: Array(UnsafeBufferPointer(start: src, count: family == 4 ? 4 : 16)))
 }
 func db_bridge_send_udp(_ ctx: UnsafeMutableRawPointer?, _ flow: UInt32, _ data: UnsafePointer<UInt8>?, _ length: Int) {
     guard let ctx, length == 0 || data != nil else { return }

@@ -107,6 +107,11 @@ private func testPfReleaseFailureRetainsTokenForRetry() throws {
         ),
         ExpectedCommand(
             executable: "/sbin/pfctl",
+            arguments: ["-s", "References"],
+            result: result(1, "reference list unavailable")
+        ),
+        ExpectedCommand(
+            executable: "/sbin/pfctl",
             arguments: ["-a", PfController.anchorName, "-F", "rules"],
             result: result()
         ),
@@ -126,6 +131,29 @@ private func testPfReleaseFailureRetainsTokenForRetry() throws {
     try controller.disable()
     check(!controller.isEnabled, "a successful retry should clear its token")
     check(runner.isEmpty, "every PF recovery command should be consumed")
+}
+
+private func testRecoveryDoesNotReuseTokenFromBeforeReboot() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("droidbridge-reboot-check-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("recovery.json")
+    // A legacy journal survives reboot, while the kernel's PF reference does not.
+    try Data(#"{"utun":"utun9","pfEnableToken":"7654"}"#.utf8).write(to: url)
+    try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1)], ofItemAtPath: url.path)
+    let store = HelperRecoveryStateStore(url: url)
+    let previousBoot = try store.load()
+    check(previousBoot != nil, "the journal still requires explicit Stop")
+    check(previousBoot?.pfEnableToken == nil, "a pre-reboot token must not be released in a new kernel")
+    check(store.hasPersistedState, "reading an old journal must not silently remove recovery intent")
+    // A current-boot legacy token remains retryable even if its earlier release failed.
+    try Data(#"{"utun":"utun9","pfEnableToken":"7654"}"#.utf8).write(to: url)
+    let currentLegacy = try store.load()
+    check(currentLegacy?.pfEnableToken == "7654", "current-boot legacy references remain owned")
+    try store.save(HelperRecoveryState(utun: "utun9", pfEnableToken: "7654", bootSessionUUID: "previous-boot"))
+    let identifiedOld = try store.load()
+    check(identifiedOld?.pfEnableToken == nil, "boot UUID prevents reusing old tokens even after timestamp changes")
 }
 
 private func testPendingPfJournalCanBeRecovered() throws {
@@ -331,8 +359,33 @@ private func testNetworkServiceWithdrawIsIdempotent() throws {
     check(runner.isEmpty, "both withdraw attempts should run scutil")
 }
 
+if CommandLine.arguments.contains("--tcp-half-close-checks") {
+    do { try await runTCPHalfCloseChecks(); exit(EXIT_SUCCESS) }
+    catch { FileHandle.standardError.write(Data("FAIL: \(error.localizedDescription)\n".utf8)); exit(EXIT_FAILURE) }
+}
+
+if CommandLine.arguments.contains("--tcp-download-checks") {
+    do { try await runTCPDownloadChecks(); exit(EXIT_SUCCESS) }
+    catch { FileHandle.standardError.write(Data("FAIL: \(error.localizedDescription)\n".utf8)); exit(EXIT_FAILURE) }
+}
+
+if CommandLine.arguments.contains("--capability-retention-checks") {
+    do { try await runCapabilityRetentionChecks(); exit(EXIT_SUCCESS) }
+    catch { FileHandle.standardError.write(Data("FAIL: \(error.localizedDescription)\n".utf8)); exit(EXIT_FAILURE) }
+}
+
+runBlockedStopChildIfRequested()
+
 do {
+    try await runHealthProbeRecoveryChecks()
+    try runAlreadyRecoveredReconnectCheck()
+    try await runAoaRecoveryChecks()
+    try runReleasedPFReferenceChecks()
+    try runDisconnectRecoveryChecks()
+    try await runHelperStopRetryChecks()
+    try runHelperRecoveryIntegrationChecks()
     try testRecoveryStateStoreRoundTrip()
+    try testRecoveryDoesNotReuseTokenFromBeforeReboot()
     try testPfReleaseFailureRetainsTokenForRetry()
     try testPendingPfJournalCanBeRecovered()
     try testInstallerMachServiceKeyPathIsAcceptedByPlutil()
@@ -342,9 +395,14 @@ do {
     try testNetworkServicePublishWaitsForConfigd()
     try testNetworkServiceFailuresAreDetected()
     try testNetworkServiceWithdrawIsIdempotent()
+    try await runTCPDownloadChecks()
+    try await runTCPHalfCloseChecks()
     runControllerSessionChecks()
+    try await runUDPAssociationControllerChecks()
+    try await runCapabilityRetentionChecks()
     runStoppedEngineCheck()
-    print("helper checks: 12 passed, 0 failed")
+    runFrozenEngineMetricsCheck()
+    print("helper checks: all passed, 0 failed")
 } catch {
     FileHandle.standardError.write(Data("FAIL: \(error.localizedDescription)\n".utf8))
     exit(EXIT_FAILURE)

@@ -13,6 +13,11 @@ public protocol RelayForwarding: Sendable {
 public protocol RelayDeviceTransport: RelayForwarding {
     func prepareDevice(serial: String) async throws
     func activateApp(serial: String) async throws
+    func suspendRecovery() async
+}
+
+public extension RelayDeviceTransport {
+    func suspendRecovery() async {}
 }
 
 /// Legacy development transport; the shipping host uses AOA.
@@ -64,6 +69,27 @@ public struct RelayPreparer: Sendable {
     public init(adb: any RelayDeviceTransport, healthClient: any RelayHealthChecking) {
         self.adb = adb
         self.healthClient = healthClient
+    }
+
+    public func preparePaired(device: AdbDevice, secret: Data, configuration: TunnelRuntimeConfiguration,
+                              store: any RuntimeConfigurationStore) async throws -> RelayPreparation {
+        guard configuration.acceptsTransportCandidate(serial: device.serial) else {
+            throw DroidBridgeError.deviceUnauthorized(serial: device.serial)
+        }
+        let preparation = try await prepare(device: device, secret: secret)
+        if device.serial != configuration.deviceSerial {
+            do {
+                try store.write(TunnelRuntimeConfiguration(deviceSerial: device.serial,
+                    relayHost: configuration.relayHost, relayPort: configuration.relayPort,
+                    pairedPeerId: configuration.pairedPeerId, keychainAccount: configuration.keychainAccount,
+                    maximumFlows: configuration.maximumFlows))
+            } catch {
+                try? await adb.removeForward(serial: device.serial, hostPort: Self.relayPort)
+                try? await adb.removeForward(serial: device.serial, hostPort: Self.pairingPort)
+                throw error
+            }
+        }
+        return preparation
     }
 
     public func prepare(device: AdbDevice, secret: Data) async throws -> RelayPreparation {

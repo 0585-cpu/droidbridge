@@ -1,5 +1,6 @@
 import Foundation
 import CAoaUSB
+import OSLog
 
 public struct AoaUSBDevice: Equatable, Sendable {
     public let location: String
@@ -12,10 +13,13 @@ public struct AoaUSBDevice: Equatable, Sendable {
 
 /// Owns a libusb context/handle. Blocking IO occurs only on dedicated USB queues/threads.
 public final class LibusbAccessoryTransport: AoaByteTransport, AoaControlDevice, @unchecked Sendable {
+    private let logger = Logger(subsystem: "io.droidbridge", category: "USBTransfer")
     private let condition = NSCondition()
     private var handle: OpaquePointer?
     private var closing = false
     private var operations = 0
+    private var firstFailure: String?
+    private let writeTrace = AoaWriteTrace()
 
     public static func devices(libraryPath: String) throws -> [AoaUSBDevice] {
         let context = try create(libraryPath)
@@ -85,6 +89,10 @@ public final class LibusbAccessoryTransport: AoaByteTransport, AoaControlDevice,
     private func endIO() {
         condition.lock(); operations -= 1; condition.broadcast(); condition.unlock()
     }
+    private func recordFailure(_ reason: String) {
+        condition.lock(); defer { condition.unlock() }
+        if !closing && firstFailure == nil { firstFailure = reason }
+    }
     public func close() {
         condition.lock()
         if closing { condition.unlock(); return }
@@ -93,24 +101,39 @@ public final class LibusbAccessoryTransport: AoaByteTransport, AoaControlDevice,
         let old = handle; handle = nil
         condition.unlock()
         if let old { db_usb_destroy(old) }
+        // IO has drained, so the writer's bounded diagnostic ring is no longer mutable.
+        do {
+            if let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first,
+               let path = try writeTrace.save(in: cache.appendingPathComponent("io.droidbridge/USBTrace"), failure: firstFailure) {
+                logger.notice("USB OUT diagnostic trace saved: \(path.path, privacy: .public)")
+            }
+        } catch { logger.error("USB OUT diagnostic trace could not be saved") }
     }
     public func readChunk() throws -> Data? {
         let handle = try beginIO(); defer { endIO() }
         var bytes = [UInt8](repeating: 0, count: 16_384)
         let count = db_usb_read(handle, &bytes, Int32(bytes.count))
+        if count < 0 { recordFailure("USB read error \(count)") }
         try Self.requireSuccess(count, "read USB data")
         return Data(bytes.prefix(Int(count)))
     }
     public func write(_ data: Data) throws {
         let handle = try beginIO(); defer { endIO() }
-        try AoaBulkWriter.write(data, maximumPacketSize: Int(db_usb_out_packet_size(handle))) { chunk in
+        do { try writeTrace.write(data, maximumPacketSize: Int(db_usb_out_packet_size(handle))) { chunk in
             var bytes = [UInt8](chunk)
+            let started = ContinuousClock.now
             let count = bytes.withUnsafeMutableBufferPointer {
                 db_usb_write(handle, $0.baseAddress, Int32($0.count))
             }
-            try Self.requireSuccess(count, "write USB data")
+            let elapsed = started.duration(to: .now)
+            if count < 0 || elapsed >= .milliseconds(500) {
+                let parts = elapsed.components
+                let milliseconds = parts.seconds * 1000 + parts.attoseconds / 1_000_000_000_000_000
+                // Diagnostics contain sizes/timing only, never tunneled data.
+                logger.notice("USB OUT requested \(bytes.count) bytes, result \(count), elapsed \(milliseconds) ms")
+            }
             return Int(count)
-        }
+        } } catch { recordFailure(error.localizedDescription); throw error }
     }
     public func controlIn(request: UInt8, length: UInt16) throws -> Data {
         let handle = try beginIO(); defer { endIO() }

@@ -1,4 +1,14 @@
 {
+  "associations": [
+    {
+      "name": "ipv4_outbound",
+      "wire_hex": "000300041234567808ae0000c0000201000000000000000000000000616263"
+    },
+    {
+      "name": "ipv6_zero_inbound",
+      "wire_hex": "00000106ffffffff01bb000020010db8000000000000000000000001"
+    }
+  ],
   "datagrams": [
     {
       "inbound": false,
@@ -136,6 +146,36 @@
       "name": "udp_close",
       "packet_hex": "444250314300004001020304050607081112131415161718000000006553f100d94eb402dbd63c57dfc2752956ebee4cbc2d5498d36a02f02db509a166a92978",
       "payload_hex": "",
+      "server_nonce": "1112131415161718",
+      "unix_time": 1700000000
+    },
+    {
+      "client_nonce": "0102030405060708",
+      "description": "",
+      "fields": {},
+      "flags": 0,
+      "header_hex": "444250314400004001020304050607081112131415161718000000006553f100fd9ac014fce71443a5cce4d10510a637806d0e130d95242eec97f0ac88a7e160",
+      "hmac_hex": "fd9ac014fce71443a5cce4d10510a637806d0e130d95242eec97f0ac88a7e160",
+      "message_name": "OPEN_UDP_ASSOCIATION",
+      "message_type": 68,
+      "name": "open_udp_association4",
+      "packet_hex": "444250314400004001020304050607081112131415161718000000006553f100fd9ac014fce71443a5cce4d10510a637806d0e130d95242eec97f0ac88a7e16004000078",
+      "payload_hex": "04000078",
+      "server_nonce": "1112131415161718",
+      "unix_time": 1700000000
+    },
+    {
+      "client_nonce": "0102030405060708",
+      "description": "",
+      "fields": {},
+      "flags": 0,
+      "header_hex": "444250314400004001020304050607081112131415161718000000006553f100bf7f344837b55707b8d5db9a256f1560d98babe9ff15efccca051c4530359792",
+      "hmac_hex": "bf7f344837b55707b8d5db9a256f1560d98babe9ff15efccca051c4530359792",
+      "message_name": "OPEN_UDP_ASSOCIATION",
+      "message_type": 68,
+      "name": "open_udp_association6",
+      "packet_hex": "444250314400004001020304050607081112131415161718000000006553f100bf7f344837b55707b8d5db9a256f1560d98babe9ff15efccca051c453035979206000078",
+      "payload_hex": "06000078",
       "server_nonce": "1112131415161718",
       "unix_time": 1700000000
     },
