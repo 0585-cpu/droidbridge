@@ -58,6 +58,7 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
     private var lastHealth: RelayHealth?
     private var runtimeStatus: TunnelRuntimeStatus = .stopped
     private var recoveryAttentionRequired = false
+    private var ownerExit: DispatchSourceProcess?
 
     init(
         teamID: String? = RuntimeSigningIdentity.teamID(),
@@ -216,6 +217,7 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
                 secret: secret,
                 immediately: false
             )
+            watchOwnerLocked(NSXPCConnection.current()?.processIdentifier)
             reply(true, nil)
         } catch {
             controller?.stop()
@@ -297,6 +299,25 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
         stopCoordinator.request(work: { [self] in try stopAndRestore() }, reply: reply)
     }
 
+    /// A killed or crashed app never sends Stop; without this its tunnel and kill-switch outlive it.
+    func watchOwner(_ pid: pid_t?) {
+        stateLock.withLock { watchOwnerLocked(pid) }
+    }
+
+    private func watchOwnerLocked(_ pid: pid_t?) {
+        ownerExit?.cancel()
+        ownerExit = nil
+        guard let pid, pid > 1 else { return }
+        let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .global())
+        source.setEventHandler { [weak self, unowned source] in
+            guard let self, self.stateLock.withLock({ self.ownerExit === source }) else { return }
+            NSLog("DroidBridge host process %d exited without Stop; restoring the network", pid)
+            self.stopTunnel { if !$0 { NSLog("DroidBridge restore after host exit needs retry") } }
+        }
+        ownerExit = source
+        source.resume()
+    }
+
     func resumePendingStop() {
         do { try stopCoordinator.resumeIfRequested { try stopAndRestore() } }
         catch {
@@ -313,6 +334,8 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
         healthTask?.cancel()
         healthTask = nil
         rebuildController = nil
+        ownerExit?.cancel()
+        ownerExit = nil
         do {
             tunnelController?.stop()
             let state = try recoveryStore.load()

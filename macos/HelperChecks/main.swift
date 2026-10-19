@@ -1,5 +1,6 @@
 import DroidBridgeShared
 import Foundation
+import os
 
 private struct ExpectedCommand {
     let executable: String
@@ -381,6 +382,53 @@ private func testTailscaleUnderlayIsBestEffort() throws {
     check(refused.isEmpty, "a refused create stops quietly")
 }
 
+private func testHostExitRestoresNetwork() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let commands = OSAllocatedUnfairLock(initialState: 0)
+    let run: HelperCommandExecuting = { _, _, _ in
+        commands.withLock { $0 += 1 }
+        return HelperCommandResult(status: 0, standardOutput: Data(), standardError: Data())
+    }
+    let service = HelperService(pfController: PfController(run: run), networkService: NetworkServicePublisher(run: run),
+                                recoveryStore: HelperRecoveryStateStore(url: directory.appendingPathComponent("journal.json")),
+                                stopCoordinator: HelperStopCoordinator(store: HelperRecoveryStateStore(url: directory.appendingPathComponent("stop.json"))),
+                                recoveryVerifier: NetworkRecoveryVerifier(run: run, attempts: 1, interval: 0))
+    func host() throws -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        try process.run()
+        return process
+    }
+    func ranStop(within seconds: Double) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if commands.withLock({ $0 }) > 0 { return true }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        return false
+    }
+    let killed = try host()
+    service.watchOwner(killed.processIdentifier)
+    kill(killed.processIdentifier, SIGKILL)
+    killed.waitUntilExit()
+    check(ranStop(within: 3), "a killed host app triggers the helper's own Stop")
+
+    let stopped = DispatchSemaphore(value: 0)
+    service.stopTunnel { _ in stopped.signal() }
+    _ = stopped.wait(timeout: .now() + 3)
+    let after = try host()
+    service.watchOwner(after.processIdentifier)
+    service.stopTunnel { _ in stopped.signal() }
+    _ = stopped.wait(timeout: .now() + 3)
+    commands.withLock { $0 = 0 }
+    kill(after.processIdentifier, SIGKILL)
+    after.waitUntilExit()
+    check(!ranStop(within: 0.5), "an explicit Stop releases the watch so a later exit does nothing")
+}
+
 if CommandLine.arguments.contains("--tcp-half-close-checks") {
     do { try await runTCPHalfCloseChecks(); exit(EXIT_SUCCESS) }
     catch { FileHandle.standardError.write(Data("FAIL: \(error.localizedDescription)\n".utf8)); exit(EXIT_FAILURE) }
@@ -418,6 +466,7 @@ do {
     try testNetworkServiceFailuresAreDetected()
     try testNetworkServiceWithdrawIsIdempotent()
     try testTailscaleUnderlayIsBestEffort()
+    try testHostExitRestoresNetwork()
     try await runTCPDownloadChecks()
     try await runTCPHalfCloseChecks()
     runControllerSessionChecks()
