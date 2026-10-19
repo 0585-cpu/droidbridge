@@ -4,7 +4,9 @@ import DroidBridgeShared
 /// One readable connection window plus a compact menu-bar entry point.
 @main
 struct DroidBridgeApp: App {
-    @State private var adapter = DroidBridgeApp.makeAdapter()
+    // The delegate owns the adapter so every termination path can restore the network first.
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    private var adapter: DroidBridgeCoordinatorAdapter { appDelegate.adapter }
 
     var body: some Scene {
         Window("DroidBridge", id: "connection") {
@@ -17,7 +19,7 @@ struct DroidBridgeApp: App {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .appTermination) {
                 // Never disabled: quitting is how a user escapes a stuck operation.
-                Button("DroidBridge 종료") { Task { await quitDroidBridge(adapter) } }
+                Button("DroidBridge 종료") { NSApplication.shared.terminate(nil) }
                     .keyboardShortcut("q")
             }
         }
@@ -28,7 +30,7 @@ struct DroidBridgeApp: App {
     }
 
     @MainActor
-    private static func makeAdapter() -> DroidBridgeCoordinatorAdapter {
+    fileprivate static func makeAdapter() -> DroidBridgeCoordinatorAdapter {
         let library = Bundle.main.bundleURL.appendingPathComponent("Contents/Frameworks/libusb-1.0.0.dylib")
         let adb = AoaDeviceLink(libraryPath: library.path)
         guard let keychainAccessGroup = RuntimeSigningIdentity.keychainAccessGroup() else {
@@ -78,22 +80,36 @@ private struct DroidBridgeQuickMenu: View {
                 .disabled(adapter.helperOperationInProgress)
         }
         Divider()
-        Button("종료") { Task { await quitDroidBridge(adapter) } }
+        Button("종료") { NSApplication.shared.terminate(nil) }
     }
 }
 
+/// Every quit — menu, ⌘Q, Dock, AppleScript, logout or shutdown — arrives here. The helper keeps
+/// the tunnel and kill-switch after the app exits, so quitting without a Stop left the Mac
+/// fail-closed and offline with nothing left to release it.
 @MainActor
-private func quitDroidBridge(_ adapter: DroidBridgeCoordinatorAdapter) async {
-    await adapter.disconnect()
-    // disconnect() skips while another operation runs; restore through the helper regardless.
-    if adapter.tunnelRunning || adapter.operationInProgress, !(await adapter.stopForQuit()) {
-        // Stay open so fail-closed protection can still be released, but never silently.
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = "DroidBridge를 종료하지 못했어요"
-        alert.informativeText = adapter.networkRecoveryMessage ?? "네트워크 설정을 복원하지 못했어요."
-        alert.runModal()
-        return
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let adapter = DroidBridgeApp.makeAdapter()
+    private var restored = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if restored || (!adapter.tunnelRunning && !adapter.operationInProgress) { return .terminateNow }
+        Task { @MainActor in
+            await adapter.disconnect()
+            // disconnect() skips while another operation runs; restore through the helper regardless.
+            var ok = true
+            if adapter.tunnelRunning || adapter.operationInProgress { ok = await adapter.stopForQuit() }
+            if !ok {
+                // Stay open so fail-closed protection can still be released, but never silently.
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                let alert = NSAlert()
+                alert.messageText = "DroidBridge를 종료하지 못했어요"
+                alert.informativeText = adapter.networkRecoveryMessage ?? "네트워크 설정을 복원하지 못했어요."
+                alert.runModal()
+            }
+            restored = ok
+            sender.reply(toApplicationShouldTerminate: ok)
+        }
+        return .terminateLater
     }
-    NSApplication.shared.terminate(nil)
 }
