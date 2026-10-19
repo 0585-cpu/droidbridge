@@ -42,6 +42,7 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
     private let stateLock = NSLock()
     private let pfController: PfController
     private let networkService: NetworkServicePublisher
+    private let underlay: TailscaleUnderlayInterface?
     private let recoveryStore: HelperRecoveryStateStore
     private let stopCoordinator: HelperStopCoordinator
     private let recoveryVerifier: NetworkRecoveryVerifier
@@ -63,6 +64,7 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
         bundleID: String = "io.droidbridge.macos",
         pfController: PfController = PfController(),
         networkService: NetworkServicePublisher = NetworkServicePublisher(),
+        underlay: TailscaleUnderlayInterface? = nil,
         recoveryStore: HelperRecoveryStateStore = HelperRecoveryStateStore(),
         stopCoordinator: HelperStopCoordinator = HelperStopCoordinator(),
         recoveryVerifier: NetworkRecoveryVerifier = NetworkRecoveryVerifier(),
@@ -75,6 +77,7 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
         )
         self.pfController = pfController
         self.networkService = networkService
+        self.underlay = underlay
         self.recoveryStore = recoveryStore
         self.stopCoordinator = stopCoordinator
         self.recoveryVerifier = recoveryVerifier
@@ -188,6 +191,7 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
             // making the tunnel the primary network. configd keeps them on utun
             // across network changes; a `route add` behind its back does not survive.
             try networkService.publish(utun: openedDevice.interfaceName)
+            underlay?.create()
 
             let runningController = Self.makeTunnelController(
                 device: openedDevice,
@@ -218,6 +222,7 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
             if let device {
                 do {
                     // Reverse ordering is equally important: service first, protection last.
+                    underlay?.destroy()
                     try networkService.withdraw()
                     try pfController.disable()
                     try recoveryStore.remove()
@@ -315,6 +320,7 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
             // On restart, service ID and virtual gateway/DNS identify our state.
             let interface = utun?.interfaceName
             try networkService.withdraw()
+            underlay?.destroy()
             utun?.close()
             // Wait for configd to withdraw our routes and DNS before releasing PF.
             try recoveryVerifier.verifyRouting(utun: interface)

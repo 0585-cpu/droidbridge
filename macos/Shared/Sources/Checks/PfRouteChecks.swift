@@ -48,5 +48,12 @@ func runPfRouteChecks(_ r: CheckRunner) {
     // utun; nothing is transmitted on the physical interface either way.
     r.check(!rules.contains("block drop"), "no rule silently drops traffic")
     r.check(rules.contains("set block-policy return"), "default block policy returns an error")
+    // Tailscale (tailnet + MagicDNS) is reachable through its overlay, never a physical interface.
+    let lines = rules.split(separator: "\n").map(String.init)
+    let tailnet = lines.firstIndex(of: "pass out quick to 100.64.0.0/10")
+    let lastPhysicalBlock = lines.lastIndex { $0.hasPrefix("block return out quick on ") }
+    r.check(tailnet != nil && lines.contains("pass out quick inet6 to fd7a:115c:a1e0::/48"), "tailnet ranges are allowed")
+    r.check(tailnet != nil && lastPhysicalBlock != nil && lastPhysicalBlock! < tailnet!,
+            "physical blocks precede the tailnet pass, so it never leaves a physical interface")
     r.finish("pf and route")
 }

@@ -359,6 +359,28 @@ private func testNetworkServiceWithdrawIsIdempotent() throws {
     check(runner.isEmpty, "both withdraw attempts should run scutil")
 }
 
+private func testTailscaleUnderlayIsBestEffort() throws {
+    let ifconfig = "/sbin/ifconfig", name = TailscaleUnderlayInterface.name
+    let up = ScriptedRunner([
+        ExpectedCommand(executable: ifconfig, arguments: [name, "destroy"], result: result(1, "does not exist")),
+        ExpectedCommand(executable: ifconfig, arguments: [name, "create"], result: result()),
+        ExpectedCommand(executable: ifconfig, arguments: [name, "inet", TailscaleUnderlayInterface.address,
+                                                          "netmask", "255.255.255.255", "up"], result: result()),
+        ExpectedCommand(executable: ifconfig, arguments: [name, "destroy"], result: result()),
+    ])
+    let underlay = TailscaleUnderlayInterface(run: up.run)
+    underlay.create()
+    underlay.destroy()
+    check(up.isEmpty, "create replaces a leftover interface, assigns its address, and destroy removes it")
+    // A failed create must not attempt the address or throw into the tunnel start.
+    let refused = ScriptedRunner([
+        ExpectedCommand(executable: ifconfig, arguments: [name, "destroy"], result: result(1)),
+        ExpectedCommand(executable: ifconfig, arguments: [name, "create"], result: result(1, "Operation not permitted")),
+    ])
+    TailscaleUnderlayInterface(run: refused.run).create()
+    check(refused.isEmpty, "a refused create stops quietly")
+}
+
 if CommandLine.arguments.contains("--tcp-half-close-checks") {
     do { try await runTCPHalfCloseChecks(); exit(EXIT_SUCCESS) }
     catch { FileHandle.standardError.write(Data("FAIL: \(error.localizedDescription)\n".utf8)); exit(EXIT_FAILURE) }
@@ -395,6 +417,7 @@ do {
     try testNetworkServicePublishWaitsForConfigd()
     try testNetworkServiceFailuresAreDetected()
     try testNetworkServiceWithdrawIsIdempotent()
+    try testTailscaleUnderlayIsBestEffort()
     try await runTCPDownloadChecks()
     try await runTCPHalfCloseChecks()
     runControllerSessionChecks()

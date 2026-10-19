@@ -16,7 +16,7 @@ if Array(CommandLine.arguments.dropFirst()) == ["--recover-network"] {
             FileHandle.standardError.write(Data("stop the installed helper before network recovery\n".utf8))
             exit(EXIT_FAILURE)
         }
-        let recovery = HelperService()
+        let recovery = HelperService(underlay: TailscaleUnderlayInterface())
         try recovery.reconcilePersistedState()
         var restored = false
         let completed = DispatchSemaphore(value: 0)
@@ -73,7 +73,7 @@ if Array(CommandLine.arguments.dropFirst()) == ["--selftest-utun"] {
     }
 }
 
-let service = HelperService()
+let service = HelperService(underlay: TailscaleUnderlayInterface())
 do {
     try service.reconcilePersistedState()
 } catch {
