@@ -10,11 +10,18 @@ struct HelperRecoveryState: Codable, Equatable {
     let pfEnableToken: String?
     /// PF references belong to one kernel boot, unlike this on-disk journal.
     let bootSessionUUID: String?
+    /// The host app that started the tunnel, so a restarted helper still restores the network
+    /// when that app dies. Start time tells a reused pid apart.
+    let ownerPID: Int32?
+    let ownerStart: UInt64?
 
-    init(utun: String, pfEnableToken: String?, bootSessionUUID: String? = HelperRecoveryStateStore.currentBootUUID()) {
+    init(utun: String, pfEnableToken: String?, bootSessionUUID: String? = HelperRecoveryStateStore.currentBootUUID(),
+         ownerPID: Int32? = nil, ownerStart: UInt64? = nil) {
         self.utun = utun
         self.pfEnableToken = pfEnableToken
         self.bootSessionUUID = bootSessionUUID
+        self.ownerPID = ownerPID
+        self.ownerStart = ownerStart
     }
 }
 

@@ -1,3 +1,4 @@
+import OSLog
 import Darwin
 import DroidBridgeShared
 import Foundation
@@ -79,9 +80,11 @@ do {
 } catch {
     // Keep the endpoint available so the signed host can surface the problem
     // and explicitly retry Stop without silently dropping protection.
-    NSLog("DroidBridge startup recovery retained protection: %@", error.localizedDescription)
+    helperLog.error("startup recovery retained protection: \(error.localizedDescription, privacy: .public)")
 }
 service.resumePendingStop()
+service.clearPreviousBoot()
+service.resumeOwnerWatch()
 let listener = NSXPCListener(machServiceName: HelperCodeRequirement.machServiceName)
 listener.setConnectionCodeSigningRequirement(service.peerRequirement)
 listener.delegate = service

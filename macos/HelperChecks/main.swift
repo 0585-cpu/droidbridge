@@ -391,16 +391,17 @@ private func testHostExitRestoresNetwork() throws {
         commands.withLock { $0 += 1 }
         return HelperCommandResult(status: 0, standardOutput: Data(), standardError: Data())
     }
+    let journal = HelperRecoveryStateStore(url: directory.appendingPathComponent("journal.json"))
     let service = HelperService(pfController: PfController(run: run), networkService: NetworkServicePublisher(run: run),
-                                recoveryStore: HelperRecoveryStateStore(url: directory.appendingPathComponent("journal.json")),
+                                recoveryStore: journal,
                                 stopCoordinator: HelperStopCoordinator(store: HelperRecoveryStateStore(url: directory.appendingPathComponent("stop.json"))),
                                 recoveryVerifier: NetworkRecoveryVerifier(run: run, attempts: 1, interval: 0))
-    func host() throws -> Process {
+    func host() throws -> (Process, UInt64) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sleep")
         process.arguments = ["30"]
         try process.run()
-        return process
+        return (process, HelperService.processStart(process.processIdentifier)!)
     }
     func ranStop(within seconds: Double) -> Bool {
         let deadline = Date().addingTimeInterval(seconds)
@@ -410,23 +411,83 @@ private func testHostExitRestoresNetwork() throws {
         }
         return false
     }
-    let killed = try host()
-    service.watchOwner(killed.processIdentifier)
+    func stop() {
+        let stopped = DispatchSemaphore(value: 0)
+        service.stopTunnel { _ in stopped.signal() }
+        _ = stopped.wait(timeout: .now() + 3)
+        commands.withLock { $0 = 0 }
+    }
+    let (killed, killedStart) = try host()
+    service.watchOwner(killed.processIdentifier, start: killedStart)
+    check(!ranStop(within: 0.3), "a live host app is left alone")
     kill(killed.processIdentifier, SIGKILL)
     killed.waitUntilExit()
     check(ranStop(within: 3), "a killed host app triggers the helper's own Stop")
+    stop()
 
-    let stopped = DispatchSemaphore(value: 0)
-    service.stopTunnel { _ in stopped.signal() }
-    _ = stopped.wait(timeout: .now() + 3)
-    let after = try host()
-    service.watchOwner(after.processIdentifier)
-    service.stopTunnel { _ in stopped.signal() }
-    _ = stopped.wait(timeout: .now() + 3)
-    commands.withLock { $0 = 0 }
+    let (after, afterStart) = try host()
+    service.watchOwner(after.processIdentifier, start: afterStart)
+    stop()
     kill(after.processIdentifier, SIGKILL)
     after.waitUntilExit()
     check(!ranStop(within: 0.5), "an explicit Stop releases the watch so a later exit does nothing")
+
+    // A restarted helper only has the journal: the owner died while no helper was watching.
+    try journal.save(HelperRecoveryState(utun: "utun99", pfEnableToken: nil,
+                                         ownerPID: after.processIdentifier, ownerStart: afterStart))
+    service.resumeOwnerWatch()
+    check(ranStop(within: 3), "a restarted helper restores the network for an owner that already died")
+    stop()
+    // A reused pid carries a different start time and must not count as the owner.
+    let (reused, reusedStart) = try host()
+    defer { reused.terminate() }
+    service.watchOwner(reused.processIdentifier, start: reusedStart &- 1)
+    check(ranStop(within: 3), "a pid now held by another process counts as a dead owner")
+    stop()
+}
+
+private func testEarlierBootStateIsCleared() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    // A rebooted Mac: configd no longer has our service and pf has no rules.
+    let run: HelperCommandExecuting = { _, _, input in
+        let script = String(decoding: input ?? Data(), as: UTF8.self)
+        let output = script.hasPrefix("show State:/Network/Service/") ? "No such key" : ""
+        return HelperCommandResult(status: 0, standardOutput: Data(output.utf8), standardError: Data())
+    }
+    let journal = HelperRecoveryStateStore(url: directory.appendingPathComponent("journal.json"))
+    let service = HelperService(pfController: PfController(run: run), networkService: NetworkServicePublisher(run: run),
+                                recoveryStore: journal,
+                                stopCoordinator: HelperStopCoordinator(store: HelperRecoveryStateStore(url: directory.appendingPathComponent("stop.json"))),
+                                recoveryVerifier: NetworkRecoveryVerifier(run: run, attempts: 1, interval: 0))
+    try journal.save(HelperRecoveryState(utun: "utun9", pfEnableToken: "77"))
+    service.clearPreviousBoot()
+    Thread.sleep(forTimeInterval: 0.3)
+    check(journal.hasPersistedState, "this boot's journal still waits for an explicit Stop")
+    try journal.save(HelperRecoveryState(utun: "utun9", pfEnableToken: "77", bootSessionUUID: "earlier-boot"))
+    try service.reconcilePersistedState()
+    service.clearPreviousBoot()
+    let deadline = Date().addingTimeInterval(3)
+    while journal.hasPersistedState, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
+    check(!journal.hasPersistedState, "an earlier boot's journal is verified and cleared without the user")
+}
+
+private func testHotpluggedInterfaceJoinsKillSwitch() throws {
+    var loads: [String] = []
+    let pf = PfController(run: { _, args, input in
+        if args.contains("-f") { loads.append(String(decoding: input ?? Data(), as: UTF8.self)) }
+        return HelperCommandResult(status: 0, standardOutput: Data(), standardError: Data())
+    })
+    let service = HelperService(pfController: pf)
+    service.blockNewPhysical(listing: { ["en0", "en7"] })
+    check(loads.isEmpty, "nothing is reloaded while the kill-switch is off")
+    try service.seedKillSwitchForChecks(utun: "utun9", physical: ["en0"])
+    service.blockNewPhysical(listing: { ["en0"] })
+    check(loads.isEmpty, "an unchanged interface set does not reload pf")
+    service.blockNewPhysical(listing: { ["en7"] })
+    check(loads.count == 1 && loads[0] == PfRuleBuilder(utun: "utun9", physical: ["en0", "en7"]).anchorBody(),
+          "a hotplugged interface is blocked before the tailnet pass, and a removed one stays blocked")
 }
 
 if CommandLine.arguments.contains("--tcp-half-close-checks") {
@@ -467,6 +528,8 @@ do {
     try testNetworkServiceWithdrawIsIdempotent()
     try testTailscaleUnderlayIsBestEffort()
     try testHostExitRestoresNetwork()
+    try testHotpluggedInterfaceJoinsKillSwitch()
+    try testEarlierBootStateIsCleared()
     try await runTCPDownloadChecks()
     try await runTCPHalfCloseChecks()
     runControllerSessionChecks()

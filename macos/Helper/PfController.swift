@@ -24,6 +24,21 @@ final class PfController {
                 output: "the DroidBridge pf anchor is already enabled"
             )
         }
+        try load(utun: utun, physical: physical)
+
+        let enableArguments = ["-E"]
+        let enableResult = try run(URL(fileURLWithPath: "/sbin/pfctl"), enableArguments, nil)
+        guard enableResult.status == 0,
+              let token = Self.enableToken(from: enableResult.outputText)
+        else {
+            _ = try? flushAnchor()
+            throw commandError(enableArguments, enableResult)
+        }
+        enableToken = token
+    }
+
+    /// Replaces the anchor body in place; pf keeps enforcing while it swaps rulesets.
+    func load(utun: String, physical: [String]) throws {
         let allInterfaces = [utun] + physical
         guard !physical.isEmpty,
               allInterfaces.allSatisfy(NetworkHardwarePortParser.isSafeInterfaceName)
@@ -46,16 +61,6 @@ final class PfController {
         guard loadResult.status == 0 else {
             throw commandError(loadArguments, loadResult)
         }
-
-        let enableArguments = ["-E"]
-        let enableResult = try run(URL(fileURLWithPath: "/sbin/pfctl"), enableArguments, nil)
-        guard enableResult.status == 0,
-              let token = Self.enableToken(from: enableResult.outputText)
-        else {
-            _ = try? flushAnchor()
-            throw commandError(enableArguments, enableResult)
-        }
-        enableToken = token
     }
 
     func disable() throws {

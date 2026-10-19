@@ -1,3 +1,4 @@
+import OSLog
 import Darwin
 import Foundation
 
@@ -38,7 +39,7 @@ final class HelperStopCoordinator: @unchecked Sendable {
             try store.save(HelperRecoveryState(utun: "explicit-stop", pfEnableToken: nil))
         } catch {
             lock.unlock()
-            NSLog("DroidBridge could not persist explicit Stop: %@", error.localizedDescription)
+            helperLog.error("could not persist explicit Stop: \(error.localizedDescription, privacy: .public)")
             reply(false)
             return
         }
@@ -58,7 +59,7 @@ final class HelperStopCoordinator: @unchecked Sendable {
         worker.async { [self] in
             var success = false
             do { try work(); success = true }
-            catch { NSLog("DroidBridge network restoration failed: %@", error.localizedDescription) }
+            catch { helperLog.error("network restoration failed: \(error.localizedDescription, privacy: .public)") }
             lock.lock()
             if success {
                 do { try store.remove() }

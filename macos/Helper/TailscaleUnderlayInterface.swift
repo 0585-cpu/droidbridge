@@ -1,3 +1,4 @@
+import OSLog
 import Foundation
 
 /// Lets Tailscale run on top of the tunnel. On macOS Tailscale ignores every `utun*` interface
@@ -29,9 +30,9 @@ final class TailscaleUnderlayInterface {
         do {
             let result = try run(Self.ifconfig, arguments, nil)
             if result.status == 0 { return true }
-            NSLog("DroidBridge Tailscale interface %@ failed: %@", arguments.joined(separator: " "), result.outputText)
+            helperLog.error("Tailscale interface \(arguments.joined(separator: " "), privacy: .public) failed: \(result.outputText, privacy: .public)")
         } catch {
-            NSLog("DroidBridge Tailscale interface %@ failed: %@", arguments.joined(separator: " "), error.localizedDescription)
+            helperLog.error("Tailscale interface \(arguments.joined(separator: " "), privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
         }
         return false
     }

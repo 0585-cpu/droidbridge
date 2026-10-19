@@ -1,6 +1,7 @@
 import DroidBridgeShared
 import Foundation
 import OSLog
+import SystemConfiguration
 
 private struct HelperDbpConnection: DbpConnection {
     let transport: any RelayTransport
@@ -35,6 +36,9 @@ enum HelperServiceError: LocalizedError {
     }
 }
 
+/// NSLog from a launchd daemon never reaches the unified log; this does (`log show --predicate 'subsystem == "io.droidbridge"'`).
+let helperLog = Logger(subsystem: "io.droidbridge", category: "Helper")
+
 /// Privileged XPC endpoint that owns fail-closed tunnel lifecycle state.
 final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperProtocol, @unchecked Sendable {
     private let healthLogger = Logger(subsystem: "io.droidbridge", category: "RelayHealth")
@@ -59,6 +63,9 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
     private var runtimeStatus: TunnelRuntimeStatus = .stopped
     private var recoveryAttentionRequired = false
     private var ownerExit: DispatchSourceProcess?
+    private var interfaceWatch: SCDynamicStore?
+    private var blockedUtun: String?
+    private var blockedPhysical: [String] = []
 
     init(
         teamID: String? = RuntimeSigningIdentity.teamID(),
@@ -165,6 +172,8 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
                 from: configJSON
             )
 
+            let ownerPID = NSXPCConnection.current()?.processIdentifier
+            let ownerStart = ownerPID.flatMap(Self.processStart)
             let openedDevice = try UtunDevice()
             device = openedDevice
             try openedDevice.assignAddress()
@@ -173,7 +182,8 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
             // Journal intent before loading PF so every subsequent crash can be
             // surfaced as a retained state requiring an explicit Stop.
             try recoveryStore.save(
-                HelperRecoveryState(utun: openedDevice.interfaceName, pfEnableToken: nil)
+                HelperRecoveryState(utun: openedDevice.interfaceName, pfEnableToken: nil,
+                                    ownerPID: ownerPID, ownerStart: ownerStart)
             )
 
             // Fail-closed invariant: protection is active before traffic moves.
@@ -185,8 +195,12 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
                 throw HelperServiceError.engineInitialization
             }
             try recoveryStore.save(
-                HelperRecoveryState(utun: openedDevice.interfaceName, pfEnableToken: pfEnableToken)
+                HelperRecoveryState(utun: openedDevice.interfaceName, pfEnableToken: pfEnableToken,
+                                    ownerPID: ownerPID, ownerStart: ownerStart)
             )
+            blockedUtun = openedDevice.interfaceName
+            blockedPhysical = physicalInterfaces
+            watchInterfacesLocked()
 
             // Then hand the default route and the system resolver to configd by
             // making the tunnel the primary network. configd keeps them on utun
@@ -217,13 +231,14 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
                 secret: secret,
                 immediately: false
             )
-            watchOwnerLocked(NSXPCConnection.current()?.processIdentifier)
+            if let ownerPID, let ownerStart { watchOwnerLocked(ownerPID, start: ownerStart) }
             reply(true, nil)
         } catch {
             controller?.stop()
             if let device {
                 do {
                     // Reverse ordering is equally important: service first, protection last.
+                    stopInterfaceWatchLocked()
                     underlay?.destroy()
                     try networkService.withdraw()
                     try pfController.disable()
@@ -236,12 +251,12 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
                         original: error,
                         rollback: rollbackError
                     )
-                    NSLog("DroidBridge fail-closed startup rollback: %@", combined.localizedDescription)
+                    helperLog.error("fail-closed startup rollback: \(combined.localizedDescription, privacy: .public)")
                     reply(false, combined.localizedDescription)
                     return
                 }
             }
-            NSLog("DroidBridge startTunnel failed: %@", error.localizedDescription)
+            helperLog.error("startTunnel failed: \(error.localizedDescription, privacy: .public)")
             reply(false, error.localizedDescription)
         }
     }
@@ -287,7 +302,8 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
             runtimeStatus: runtimeStatus,
             activeUDP: tunnelController?.activeUDPCount ?? 0,
             udpDrops: tunnelController?.udpDrops ?? 0,
-            capabilities: tunnelController?.capabilities
+            capabilities: tunnelController?.capabilities,
+            peerDatagramLimit: tunnelController?.peerDatagramLimit
         )
         stateLock.unlock()
         reply((try? JSONEncoder.droidBridge.encode(snapshot)) ?? Data())
@@ -300,22 +316,100 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
     }
 
     /// A killed or crashed app never sends Stop; without this its tunnel and kill-switch outlive it.
-    func watchOwner(_ pid: pid_t?) {
-        stateLock.withLock { watchOwnerLocked(pid) }
+    func watchOwner(_ pid: pid_t, start: UInt64) {
+        stateLock.withLock { watchOwnerLocked(pid, start: start) }
     }
 
-    private func watchOwnerLocked(_ pid: pid_t?) {
+    /// Called once at launch. A reboot already dropped our pf rules and the configd service, so a
+    /// journal from an earlier boot needs no user decision; Stop still verifies before removing it.
+    func clearPreviousBoot() {
+        guard let state = try? recoveryStore.load(), let boot = state.bootSessionUUID,
+              let current = HelperRecoveryStateStore.currentBootUUID(), boot != current else { return }
+        helperLog.notice("clearing network state left by an earlier boot")
+        stopTunnel { if !$0 { helperLog.error("earlier-boot cleanup needs Stop") } }
+    }
+
+    /// Called once at launch: a restarted helper picks the watch back up from the journal.
+    func resumeOwnerWatch() {
+        guard let state = try? recoveryStore.load(), let pid = state.ownerPID, let start = state.ownerStart else { return }
+        watchOwner(pid, start: start)
+    }
+
+    private func watchOwnerLocked(_ pid: pid_t, start: UInt64) {
         ownerExit?.cancel()
         ownerExit = nil
-        guard let pid, pid > 1 else { return }
+        guard pid > 1 else { return }
         let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .global())
-        source.setEventHandler { [weak self, unowned source] in
-            guard let self, self.stateLock.withLock({ self.ownerExit === source }) else { return }
-            NSLog("DroidBridge host process %d exited without Stop; restoring the network", pid)
-            self.stopTunnel { if !$0 { NSLog("DroidBridge restore after host exit needs retry") } }
+        let restore: @Sendable () -> Void = { [weak self, weak source] in
+            guard let self, let source, self.stateLock.withLock({
+                guard self.ownerExit === source else { return false }
+                self.ownerExit = nil
+                return true
+            }) else { return }
+            source.cancel()
+            helperLog.notice("host process \(pid) exited without Stop; restoring the network")
+            self.stopTunnel { if !$0 { helperLog.error("restore after host exit needs retry") } }
         }
+        source.setEventHandler(handler: restore)
         ownerExit = source
         source.resume()
+        // The owner may already be gone (or its pid reused) before the source was armed.
+        if Self.processStart(pid) != start { DispatchQueue.global().async(execute: restore) }
+    }
+
+    static func processStart(_ pid: pid_t) -> UInt64? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return info.pbi_start_tvsec &* 1_000_000 &+ info.pbi_start_tvusec
+    }
+
+    /// The default deny already covers a hotplugged interface, but the tailnet pass does not
+    /// (PfRuleBuilder); re-list physical interfaces whenever the kernel's set changes.
+    private func watchInterfacesLocked() {
+        var context = SCDynamicStoreContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
+                                            retain: nil, release: nil, copyDescription: nil)
+        guard let store = SCDynamicStoreCreate(nil, "io.droidbridge.helper" as CFString, { _, _, info in
+            guard let info else { return }
+            Unmanaged<HelperService>.fromOpaque(info).takeUnretainedValue().blockNewPhysical()
+        }, &context) else { return }
+        SCDynamicStoreSetNotificationKeys(store, ["State:/Network/Interface"] as CFArray, nil)
+        SCDynamicStoreSetDispatchQueue(store, DispatchQueue(label: "io.droidbridge.interfaces"))
+        interfaceWatch = store
+    }
+
+    private func stopInterfaceWatchLocked() {
+        if let interfaceWatch { SCDynamicStoreSetDispatchQueue(interfaceWatch, nil) }
+        interfaceWatch = nil
+        blockedUtun = nil
+        blockedPhysical = []
+    }
+
+    func blockNewPhysical(listing: () throws -> [String] = { try NetworkInterfaces.physical() }) {
+        // networksetup runs outside stateLock so status and Stop never wait on it.
+        let current: [String]
+        do { current = try listing() }
+        catch { return helperLog.error("could not list interfaces: \(error.localizedDescription, privacy: .public)") }
+        stateLock.withLock {
+            guard let utun = blockedUtun, pfController.isEnabled else { return }
+            let added = current.filter { !blockedPhysical.contains($0) }
+            guard !added.isEmpty else { return }
+            do {
+                try pfController.load(utun: utun, physical: blockedPhysical + added)
+                blockedPhysical += added
+                helperLog.notice("kill-switch now also blocks \(added.joined(separator: ", "), privacy: .public)")
+            } catch {
+                helperLog.error("could not extend the kill-switch: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    func seedKillSwitchForChecks(utun: String, physical: [String]) throws {
+        try stateLock.withLock {
+            try pfController.adoptRecoveryToken("1")
+            blockedUtun = utun
+            blockedPhysical = physical
+        }
     }
 
     func resumePendingStop() {
@@ -323,7 +417,7 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
         catch {
             recoveryAttentionRequired = true
             runtimeStatus = .teardownFailed
-            NSLog("DroidBridge pending Stop needs retry: %@", error.localizedDescription)
+            helperLog.error("pending Stop needs retry: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -336,6 +430,7 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
         rebuildController = nil
         ownerExit?.cancel()
         ownerExit = nil
+        stopInterfaceWatchLocked()
         do {
             tunnelController?.stop()
             let state = try recoveryStore.load()
