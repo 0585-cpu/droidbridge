@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import DroidBridgeShared
+import DroidBridgeUSB
 
 private struct HostDbpConnection: DbpConnection {
     let transport: any RelayTransport
@@ -549,6 +550,10 @@ public final class DroidBridgeCoordinatorAdapter {
                         if metrics.tunnelActive {
                             tunnelMessage = "Tunnel stopped; fail-closed protection may still be active."
                         }
+                    }
+                    if metrics.runtimeStatus != .running, let call = LibusbAccessoryTransport.stalledCall {
+                        // Only a new process clears it; reconnecting in this one would hang as well.
+                        tunnelMessage = "USB가 응답하지 않아요(\(call)). 케이블을 뽑았다 다시 꽂고, 그래도 안 되면 DroidBridge를 종료한 뒤 다시 실행해 주세요."
                     }
                 }
                 try? await Task.sleep(for: .seconds(2))

@@ -22,9 +22,35 @@ public final class LibusbAccessoryTransport: AoaByteTransport, AoaControlDevice,
     private let writeTrace = AoaWriteTrace()
 
     public static func devices(libraryPath: String) throws -> [AoaUSBDevice] {
-        let context = try create(libraryPath)
-        defer { db_usb_destroy(context) }
-        return try enumerate(context)
+        try guarded("device listing") {
+            let context = try create(libraryPath)
+            defer { db_usb_destroy(context) }
+            return try enumerate(context)
+        }
+    }
+
+    private static let stall = OSAllocatedUnfairLock<String?>(initialState: nil)
+    private static let stallLogger = Logger(subsystem: "io.droidbridge", category: "USBStall")
+    /// A libusb call stuck on a wedged phone can hold libusb's process-wide locks, so later
+    /// listings and reopens hang too and only a new process recovers. This names that call.
+    public static var stalledCall: String? { stall.withLock { $0 } }
+
+    package static func guarded<T>(_ call: String, limit: TimeInterval = 5, _ body: () throws -> T) rethrows -> T {
+        let alarm = DispatchWorkItem {
+            stall.withLock { $0 = call }
+            stallLogger.fault("libusb \(call, privacy: .public) has not returned for \(Int(limit)) s")
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + limit, execute: alarm)
+        defer {
+            alarm.cancel()
+            let cleared = stall.withLock { current -> Bool in
+                guard current == call else { return false }
+                current = nil
+                return true
+            }
+            if cleared { stallLogger.notice("libusb \(call, privacy: .public) returned after a stall") }
+        }
+        return try body()
     }
 
     public init(libraryPath: String, location: String) throws {
@@ -97,10 +123,10 @@ public final class LibusbAccessoryTransport: AoaByteTransport, AoaControlDevice,
         condition.lock()
         if closing { condition.unlock(); return }
         closing = true
-        while operations > 0 { condition.wait() }
+        Self.guarded("close waiting for in-flight USB IO") { while operations > 0 { condition.wait() } }
         let old = handle; handle = nil
         condition.unlock()
-        if let old { db_usb_destroy(old) }
+        if let old { Self.guarded("USB teardown") { db_usb_destroy(old) } }
         // IO has drained, so the writer's bounded diagnostic ring is no longer mutable.
         do {
             if let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first,

@@ -93,6 +93,17 @@ rejects("truncated frame") {
 }
 print("AOA codec checks passed")
 try runWriteFailureChecks()
+// A stuck libusb call is named while it is stuck and forgotten once it returns.
+let stuck = DispatchSemaphore(value: 0)
+Thread.detachNewThread { LibusbAccessoryTransport.guarded("probe", limit: 0.05) { stuck.wait() } }
+Thread.sleep(forTimeInterval: 0.3)
+check(LibusbAccessoryTransport.stalledCall == "probe", "a libusb call past its limit is reported")
+stuck.signal()
+Thread.sleep(forTimeInterval: 0.1)
+check(LibusbAccessoryTransport.stalledCall == nil, "the report clears once the call returns")
+LibusbAccessoryTransport.guarded("fast", limit: 0.05) {}
+Thread.sleep(forTimeInterval: 0.15)
+check(LibusbAccessoryTransport.stalledCall == nil, "a call that returns in time is never reported")
 try runMuxChecks()
 try runBackpressureChecks()
 try runHandshakeChecks()
