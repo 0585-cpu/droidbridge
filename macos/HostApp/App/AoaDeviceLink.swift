@@ -34,7 +34,9 @@ actor AoaDeviceLink: RelayDeviceTransport {
 
     init(libraryPath: String) {
         self.libraryPath = libraryPath
-        retryDelays = [.seconds(1), .seconds(2), .seconds(4)]
+        // About 90 s, past the phone's 60 s no-progress and 70 s host-silence deadlines: it keeps
+        // the old session until then (seen: Mac gave up after 7 s, the phone reopened at 60 s).
+        retryDelays = [.seconds(1), .seconds(2), .seconds(4), .seconds(8)] + Array(repeating: .seconds(15), count: 5)
         sessionFactory = { serial, automatic, disconnected in
             let location = String(serial.dropFirst(4))
             return AoaMultiplexer(transportFactory: {
