@@ -62,7 +62,8 @@ func wireInteger<T: FixedWidthInteger>(_ value: T) -> Data { withUnsafeBytes(of:
 func wireRead(_ b: [UInt8], _ offset: Int, _ length: Int) -> UInt64 { b[offset..<(offset+length)].reduce(0) { ($0 << 8) | UInt64($1) } }
 
 public struct DatagramFrame: Sendable, Equatable {
-    public static let maximumPayload = 1232
+    // IPv4 UDP at the 1500-byte tunnel MTU; the phone must advertise the same value.
+    public static let maximumPayload = 1472
     public let payload: Data
     public let inbound: Bool
     public let sequence: UInt32

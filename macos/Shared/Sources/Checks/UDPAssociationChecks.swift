@@ -53,7 +53,7 @@ func runUDPAssociationChecks(_ r: CheckRunner) {
         r.check(queue.pop()?.peer == second && queue.pop() == nil, "queued retired peer packets cannot reach reused association")
         for i in 0..<70 { queue.append(flow: 2, payload: Data([UInt8(i)])) }
         r.check(queue.drops == 6 && queue.pop()?.payload == Data([6]), "association queue bounded to 64 packets with oldest dropped")
-        queue.append(flow: 2, payload: Data(count: 1233))
+        queue.append(flow: 2, payload: Data(count: DatagramFrame.maximumPayload + 1))
         r.check(queue.drops == 7, "association oversized outbound counted")
         queue.close(); queue.register(flow: 3, peer: peer); queue.append(flow: 3, payload: Data())
         r.check(queue.pop() == nil, "closed association queue cannot reopen")
@@ -88,7 +88,7 @@ private actor AssociationTransport: RelayTransport {
             guard request.type == .openUDPAssociation, Data(data.dropFirst(64)) == Data([4,0,0,120]) else { throw DroidBridgeError.relayProtocol("association expected") }
             opens += 1
             if mode == .blockedOpen { return }
-            type = .openUDPOk; payload = Data([0,0,0,1,0,120,4,208])
+            type = .openUDPOk; payload = Data([0,0,0,1,0,120,5,192]) // max payload 1472
         }
         let response = DbpHeader(type: type, clientNonce: request.clientNonce, serverNonce: 17, unixTime: request.unixTime)
         var frame = DbpCodec.frame(secret: associationSecret, header: response, payload: payload)

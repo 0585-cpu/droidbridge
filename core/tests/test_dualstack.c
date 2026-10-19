@@ -149,7 +149,7 @@ static uint32_t now(void *c) { return ((state *)c)->now; }
 static void setup(state *s) {
     memset(s, 0, sizeof *s);
     db_engine_config_t c = {.maximum_flows = 256,
-                            .mtu = 1280,
+                            .mtu = DB_TUNNEL_MTU,
                             .emit_packet = emit,
                             .open_flow = oldopen,
                             .send_flow = send_tcp,
@@ -235,7 +235,8 @@ static void test_udp_roundtrip_zero_max_and_tuple_isolation(void) {
         state s;
         setup(&s);
         db_engine_set_capabilities(s.e, DB_CAP_UDP4 | DB_CAP_UDP6);
-        uint8_t p[1500], payload[1233];
+        uint8_t p[2048], payload[DB_UDP_MAX_PAYLOAD + 1];
+        size_t max = family == 4 ? DB_UDP_MAX_PAYLOAD : DB_TUNNEL_MTU - 48; /* fills the MTU */
         for (size_t i = 0; i < sizeof payload; i++)
             payload[i] = (uint8_t)i;
         size_t n = packet(p, family, 17, 5000, 443, NULL, 0);
@@ -248,25 +249,25 @@ static void test_udp_roundtrip_zero_max_and_tuple_isolation(void) {
         ASSERT_EQ_INT(family == 4 ? 28 : 48, s.outlen);
         ASSERT_EQ_INT(0, transport_ck(s.out, s.outlen));
         ASSERT_EQ_INT(443, r16(s.out + (family == 4 ? 20 : 40)));
-        n = packet(p, family, 17, 5000, 8443, payload, 1232);
+        n = packet(p, family, 17, 5000, 8443, payload, max);
         db_engine_input_packet(s.e, p, n);
         ASSERT_EQ_INT(2, s.opens);
-        ASSERT_EQ_INT(1232, s.len);
+        ASSERT_EQ_INT(max, s.len);
         ASSERT_TRUE(s.id != first);
-        ASSERT_EQ_INT(DB_ENGINE_OK, db_engine_on_udp_data(s.e, s.id, payload, 1232));
-        ASSERT_EQ_INT(family == 4 ? 1260 : 1280, s.outlen);
+        ASSERT_EQ_INT(DB_ENGINE_OK, db_engine_on_udp_data(s.e, s.id, payload, max));
+        ASSERT_EQ_INT(DB_TUNNEL_MTU, s.outlen);
         ASSERT_EQ_INT(0, transport_ck(s.out, s.outlen));
-        ASSERT_MEM_EQ(payload, s.out + (family == 4 ? 28 : 48), 1232);
+        ASSERT_MEM_EQ(payload, s.out + (family == 4 ? 28 : 48), max);
         n = packet(p, family, 17, 5000, 443, payload, 1);
         db_engine_input_packet(s.e, p, n);
         ASSERT_EQ_INT(2, s.opens);
         ASSERT_EQ_INT(2, db_engine_udp_flow_count(s.e));
         ASSERT_EQ_INT(2, db_engine_active_flow_count(s.e));
         uint64_t drops = db_engine_udp_drop_count(s.e);
-        n = packet(p, family, 17, 5000, 443, payload, 1233);
+        n = packet(p, family, 17, 5000, 443, payload, max + 1);
         db_engine_input_packet(s.e, p, n);
         ASSERT_EQ_U64(drops + 1, db_engine_udp_drop_count(s.e));
-        ASSERT_EQ_INT(DB_ENGINE_ERR_ARGUMENT, db_engine_on_udp_data(s.e, first, payload, 1233));
+        ASSERT_EQ_INT(DB_ENGINE_ERR_ARGUMENT, db_engine_on_udp_data(s.e, first, payload, DB_UDP_MAX_PAYLOAD + 1));
         ASSERT_EQ_INT(DB_ENGINE_OK, db_engine_on_udp_closed(s.e, first));
         ASSERT_EQ_INT(DB_ENGINE_ERR_UNKNOWN_FLOW, db_engine_on_udp_data(s.e, first, NULL, 0));
         ASSERT_EQ_INT(1, db_engine_udp_flow_count(s.e));
@@ -652,7 +653,7 @@ static void test_icmp_zero_max_size_private_and_timeout_wrap(void) {
 static void test_udp_source_endpoint_callback(void) {
     for (int family = 4; family <= 6; family += 2) {
         state s = {0};
-        db_engine_config_t config = {.maximum_flows = 256, .mtu = 1280, .context = &s,
+        db_engine_config_t config = {.maximum_flows = 256, .mtu = DB_TUNNEL_MTU, .context = &s,
             .emit_packet = emit, .open_flow = oldopen, .send_flow = send_tcp,
             .close_flow = close_cb, .send_udp = send_udp, .close_udp = close_cb,
             .open_udp_endpoint = open_endpoint};

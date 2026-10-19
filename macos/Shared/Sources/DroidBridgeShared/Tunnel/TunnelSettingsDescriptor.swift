@@ -18,6 +18,6 @@ public struct TunnelSettingsDescriptor: Equatable, Sendable {
         dnsServers: ["198.18.0.1"],
         includedRoutes: ["0.0.0.0/0"],   // full tunnel
         excludedRoutes: ["127.0.0.0/8"], // loopback only
-        mtu: 1280
+        mtu: 1500
     )
 }

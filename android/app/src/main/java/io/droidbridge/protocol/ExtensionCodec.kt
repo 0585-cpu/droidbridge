@@ -79,7 +79,7 @@ object ExtensionCodec {
         if(family !in listOf(4,6) || bytes[1] != 0.toByte() || idle !in 30..300) throw DbpProtocolException("UDP association open")
         return UdpAssociationOpen(family,idle)
     }
-    fun encodeUdpOk(id: Int, idle: Int): ByteArray = ByteBuffer.allocate(8).putInt(id).putShort(idle.toShort()).putShort(1232).array()
+    fun encodeUdpOk(id: Int, idle: Int): ByteArray = ByteBuffer.allocate(8).putInt(id).putShort(idle.toShort()).putShort(DatagramCodec.MAX_PAYLOAD.toShort()).array()
     fun encodeUdpError(error: DbpErrorCode): ByteArray = ByteBuffer.allocate(4).putShort(error.code.toShort()).putShort(0).array()
     fun decodeIcmpRequest(bytes: ByteArray): IcmpRequest {
         if (bytes.size < 24) throw DbpProtocolException("ICMP size")
@@ -97,7 +97,8 @@ object ExtensionCodec {
 
 data class RawDatagram(val payload: ByteArray,val flags: Int,val sequence: Long)
 object DatagramCodec {
-    const val MAX_PAYLOAD=1232
+    // IPv4 UDP at the Mac's 1500-byte tunnel MTU; advertised in OPEN_UDP_OK and checked by the Mac.
+    const val MAX_PAYLOAD=1472
     fun encode(packet: RawDatagram): ByteArray {
         if (packet.payload.size > MAX_PAYLOAD || packet.flags !in 0..1) throw DbpProtocolException("datagram")
         return ByteBuffer.allocate(8+packet.payload.size).putShort(packet.payload.size.toShort()).put(packet.flags.toByte()).put(0).putInt(packet.sequence.toInt()).put(packet.payload).array()

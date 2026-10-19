@@ -113,7 +113,7 @@ class UdpAssociationRelaySessionTest {
                 send(client,oversized); withContext(Dispatchers.IO) { receive(oversized) }
                 repeat(6) { index ->
                     delay(50)
-                    oversized.send(DatagramPacket(ByteArray(1233),1233,loopback,remote.localPort))
+                    oversized.send(DatagramPacket(ByteArray(DatagramCodec.MAX_PAYLOAD+1),DatagramCodec.MAX_PAYLOAD+1,loopback,remote.localPort))
                     withTimeout(1500) { while(drops.get()<index+1L) delay(5) }
                     send(client,active,index+1L); withContext(Dispatchers.IO) { receive(active) }
                 }

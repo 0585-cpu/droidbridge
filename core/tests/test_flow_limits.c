@@ -4,10 +4,10 @@
 #include "test_support.h"
 
 static void test_rejects_bad_config(void) {
-    db_engine_config_t base = { .maximum_flows = 128, .mtu = 1280,
+    db_engine_config_t base = { .maximum_flows = 128, .mtu = DB_TUNNEL_MTU,
         .emit_packet = (db_emit_packet_fn)1, .open_flow = (db_open_flow_fn)1,
         .send_flow = (db_send_flow_fn)1, .close_flow = (db_close_flow_fn)1 };
-    db_engine_config_t bad = base; bad.mtu = 1500;
+    db_engine_config_t bad = base; bad.mtu = 1280;
     ASSERT_TRUE(db_engine_create(&bad) == NULL);
     bad = base; bad.maximum_flows = 0;
     ASSERT_TRUE(db_engine_create(&bad) == NULL);

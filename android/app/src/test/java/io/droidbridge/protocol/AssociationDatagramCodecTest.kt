@@ -35,7 +35,7 @@ class AssociationDatagramCodecTest {
     }
     @Test fun `encoder rejects invalid family address length direction port and sequence`() {
         val base=RawAssociationDatagram(byteArrayOf(),0,0,4,byteArrayOf(1,1,1,1),53)
-        for(packet in listOf(base.copy(family=5),base.copy(address=ByteArray(16)),base.copy(direction=2),base.copy(port=0),base.copy(port=65536),base.copy(sequence=-1),base.copy(sequence=0x100000000L),base.copy(payload=ByteArray(1233)))) {
+        for(packet in listOf(base.copy(family=5),base.copy(address=ByteArray(16)),base.copy(direction=2),base.copy(port=0),base.copy(port=65536),base.copy(sequence=-1),base.copy(sequence=0x100000000L),base.copy(payload=ByteArray(DatagramCodec.MAX_PAYLOAD+1)))) {
             try { AssociationDatagramCodec.encode(packet); fail("invalid frame accepted") } catch(_: DbpProtocolException) {}
         }
     }

@@ -115,7 +115,7 @@ final class UtunDevice: @unchecked Sendable {
     func assignAddress(
         _ address: String = "198.18.0.2",
         peer: String = "198.18.0.1",
-        mtu: Int = 1280
+        mtu: Int = 1500
     ) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")

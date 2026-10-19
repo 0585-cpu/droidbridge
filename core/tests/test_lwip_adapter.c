@@ -33,7 +33,7 @@ static void test_netif_has_expected_address_and_mtu(void) {
     db_lwip_netmask(ctx, mask);
     assert_ipv4(addr, "198.18.0.1");
     assert_ipv4(mask, "255.255.255.252");
-    ASSERT_EQ_INT(1280, db_lwip_mtu(ctx));
+    ASSERT_EQ_INT(DB_TUNNEL_MTU, db_lwip_mtu(ctx));
     if (overlap != NULL) db_lwip_shutdown(overlap);
     db_lwip_shutdown(ctx);
 }

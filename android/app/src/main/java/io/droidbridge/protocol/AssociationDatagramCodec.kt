@@ -10,7 +10,7 @@ data class RawAssociationDatagram(val payload: ByteArray, val direction: Int, va
 
 object AssociationDatagramCodec {
     const val HEADER_SIZE=28
-    const val MAX_PAYLOAD=1232
+    const val MAX_PAYLOAD=DatagramCodec.MAX_PAYLOAD
 
     fun encode(payload: ByteArray, length: Int, direction: Int, sequence: Long,
         family: Int, address: ByteArray, port: Int): ByteArray {

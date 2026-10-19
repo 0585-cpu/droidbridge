@@ -62,7 +62,7 @@ private actor ExtensionTransport: RelayTransport {
             type = .capabilitiesResponse
             var body = Data(repeating: 0, count: 59); body[0] = 1; body[8] = 15; body[16] = 42
             payload = Data([0,59]) + body
-        case .openUDP: type = .openUDPOk; payload = Data([0,0,0,7,0,120,4,208])
+        case .openUDP: type = .openUDPOk; payload = Data([0,0,0,7,0,120,5,192]) // max payload 1472
         case .dnsQuery: type = .dnsResponse; payload = Data(data.dropFirst(64))
         case .icmpEcho:
             type = .icmpResponse
@@ -77,7 +77,7 @@ private actor ExtensionTransport: RelayTransport {
         inbox.append(mode == .truncatedCaps && request.type == .capabilities ? Data(response.prefix(64)) : response)
         if request.type == .openUDP {
             inbox.append(try DatagramFrame(payload: Data(), inbound: mode != .wrongDirection, sequence: 0).encoded())
-            inbox.append(try DatagramFrame(payload: Data(repeating: 9, count: 1232), inbound: true, sequence: 2).encoded())
+            inbox.append(try DatagramFrame(payload: Data(repeating: 9, count: DatagramFrame.maximumPayload), inbound: true, sequence: 2).encoded())
         }
         resumeIfReady()
     }
@@ -136,7 +136,7 @@ func runExtensionRelayChecks(_ r: CheckRunner) async {
     let frames = await transport.rawFrames
     let first = frames.first.flatMap { try? DatagramFrame.decode($0) }
     r.check(frames.count == 64 && first?.payload == Data([6]) && first?.sequence == 0, "UDP initial queue drains in order after authenticated OPEN")
-    r.check(delegate.received == [Data(),Data(repeating: 9,count: 1232)], "UDP receives empty and maximum packet distinctly")
+    r.check(delegate.received == [Data(),Data(repeating: 9,count: DatagramFrame.maximumPayload)], "UDP receives empty and maximum packet distinctly")
     let gaps = await flow.sequenceGaps
     r.check(gaps == 1 && flow.drops == 6, "UDP sequence gaps and queue drops tracked")
     await flow.close(); await flow.close()

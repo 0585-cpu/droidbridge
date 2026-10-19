@@ -159,7 +159,7 @@ Peers advertising `UDP_ASSOCIATION = 1 << 10` accept authenticated message
 `OPEN_UDP_ASSOCIATION (0x44)`. Its fixed four-byte payload contains family (4 or 6),
 a reserved zero byte, and a big-endian uint16 idle timeout (30–300 seconds).
 The reply is the existing `OPEN_UDP_OK` or `OPEN_UDP_ERROR`. The successful reply
-retains its eight-byte layout and maximum datagram payload of 1232 bytes.
+retains its eight-byte layout and maximum datagram payload of 1472 bytes (IPv4 UDP at the 1500-byte tunnel MTU; IPv6 is held to 1452 by the MTU).
 Without this capability the host retains the existing per-destination `OPEN_UDP`.
 
 Each association stream owns one unconnected cellular UDP socket. The host groups
@@ -172,7 +172,7 @@ After OPEN, each datagram has a 28-byte header followed by its payload:
 
 | Offset | Size | Value |
 | --- | --- | --- |
-| 0 | 2 | Payload length, big-endian, 0–1232 |
+| 0 | 2 | Payload length, big-endian, 0–1472 |
 | 2 | 1 | Direction: 0 Mac to phone, 1 phone to Mac |
 | 3 | 1 | Association family, 4 or 6 |
 | 4 | 4 | Sequence, big-endian uint32 |

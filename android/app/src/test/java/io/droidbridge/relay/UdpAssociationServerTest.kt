@@ -98,16 +98,16 @@ class UdpAssociationServerTest {
             peer.soTimeout=2000
             try { Client(server.port).use { client ->
                 client.open()
-                for(size in listOf(0,1232)) {
+                for(size in listOf(0,DatagramCodec.MAX_PAYLOAD)) {
                     val data=ByteArray(size) { 7 }
                     client.output.write(wire(peer.localPort,data,size))
                     val packet=withContext(Dispatchers.IO) { receive(peer) }
                     assertArrayEquals(data,packet.data.copyOf(packet.length))
                     peer.send(DatagramPacket(data,data.size,packet.socketAddress))
                     readReply(client,peer.localPort,data)
-                    if(size==1232) {
+                    if(size==DatagramCodec.MAX_PAYLOAD) {
                         val before=server.metrics.udpDrops()
-                        peer.send(DatagramPacket(ByteArray(1233),1233,packet.socketAddress))
+                        peer.send(DatagramPacket(ByteArray(DatagramCodec.MAX_PAYLOAD+1),DatagramCodec.MAX_PAYLOAD+1,packet.socketAddress))
                         withTimeout(1500) { while(server.metrics.udpDrops()==before) delay(5) }
                         peer.send(DatagramPacket(byteArrayOf(5),1,packet.socketAddress))
                         readReply(client,peer.localPort,byteArrayOf(5))
@@ -126,7 +126,7 @@ class UdpAssociationServerTest {
     @Test fun `malformed association packet closes socket and returns capacity`() = runBlocking {
         val backend=Backend(); val server=server(backend,1)
         try {
-            for(bad in listOf(wire(9,byteArrayOf(1)).also { it[2]=1 },wire(9,byteArrayOf(1)).also { it[3]=6 },wire(9,byteArrayOf(1)).also { it[10]=1 },wire(9,ByteArray(1233)),wire(9,byteArrayOf(1)).also { it[16]=1 },wire(0,byteArrayOf(1)))) {
+            for(bad in listOf(wire(9,byteArrayOf(1)).also { it[2]=1 },wire(9,byteArrayOf(1)).also { it[3]=6 },wire(9,byteArrayOf(1)).also { it[10]=1 },wire(9,ByteArray(DatagramCodec.MAX_PAYLOAD+1)),wire(9,byteArrayOf(1)).also { it[16]=1 },wire(0,byteArrayOf(1)))) {
                 Client(server.port).use { client ->
                     client.open(); client.output.write(bad)
                     try { assertEquals(-1,client.input.read()) } catch(_: SocketException) { /* reset is valid with unread malformed bytes */ }

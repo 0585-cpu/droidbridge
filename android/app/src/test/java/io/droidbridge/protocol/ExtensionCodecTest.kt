@@ -26,7 +26,7 @@ class ExtensionCodecTest {
         assertThrows(IllegalArgumentException::class.java) { UdpOpen(open.destination,301) }
     }
     @Test fun `raw datagrams preserve empty maximum and wrapping sequence`() {
-        for (length in listOf(0,1,1232)) {
+        for (length in listOf(0,1,DatagramCodec.MAX_PAYLOAD)) {
             val packet = RawDatagram(ByteArray(length) { it.toByte() },0,0xffffffffL)
             val decoded = DatagramCodec.read(ByteArrayInputStream(DatagramCodec.encode(packet)),0)!!
             assertArrayEquals(packet.payload,decoded.payload)
@@ -34,7 +34,7 @@ class ExtensionCodecTest {
         }
         assertNull(DatagramCodec.read(ByteArrayInputStream(byteArrayOf()),0))
         assertThrows(EOFException::class.java) { DatagramCodec.read(ByteArrayInputStream(byteArrayOf(0)),0) }
-        assertThrows(DbpProtocolException::class.java) { DatagramCodec.read(ByteArrayInputStream(byteArrayOf(4,-47,0,0,0,0,0,0)),0) }
+        assertThrows(DbpProtocolException::class.java) { DatagramCodec.read(ByteArrayInputStream(byteArrayOf(5,-63,0,0,0,0,0,0) /* 1473: one over the maximum */),0) }
         assertThrows(DbpProtocolException::class.java) { DatagramCodec.read(ByteArrayInputStream(byteArrayOf(0,0,2,0,0,0,0,0)),0) }
         assertThrows(DbpProtocolException::class.java) { DatagramCodec.read(ByteArrayInputStream(byteArrayOf(0,0,0,1,0,0,0,0)),0) }
     }

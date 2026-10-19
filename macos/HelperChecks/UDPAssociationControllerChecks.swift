@@ -108,7 +108,7 @@ private actor ControllerUDPWire: RelayTransport {
         case .openUDPAssociation, .openUDP:
             opens += 1
             command = request.type; openPayload = payload
-            type = .openUDPOk; response = Data([0, 0, 0, 1, 0, 120, 4, 208])
+            type = .openUDPOk; response = Data([0, 0, 0, 1, 0, 120, 5, 192]) // max payload 1472
         default:
             throw ControllerUDPCheckError(message: "Unexpected controller relay command \(request.type)")
         }

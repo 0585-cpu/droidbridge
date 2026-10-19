@@ -113,7 +113,7 @@ uint16_t db_transport_checksum(const db_ip_view_t *v, const uint8_t *p, size_t n
 size_t db_ip_build(uint8_t family, uint8_t protocol, const uint8_t *src, const uint8_t *dst, const uint8_t *t,
                    size_t n, uint8_t *out, size_t cap) {
     size_t h = family == 4 ? 20 : 40;
-    if (!src || !dst || !out || (!t && n) || (family != 4 && family != 6) || n > 1280 - h || cap < h + n)
+    if (!src || !dst || !out || (!t && n) || (family != 4 && family != 6) || n > DB_TUNNEL_MTU - h || cap < h + n)
         return 0;
     memset(out, 0, h);
     out[0] = family == 4 ? 0x45 : 0x60;

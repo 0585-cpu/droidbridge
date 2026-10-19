@@ -53,7 +53,7 @@ public actor RelayDatagramConnection {
         let (header, payload) = try await session.read(serverNonce: nonce)
         let b = [UInt8](payload)
         guard !closed, header.type == .openUDPOk, b.count == 8,
-              (30...300).contains(wireRead(b,4,2)), wireRead(b,6,2) == 1232 else { throw DroidBridgeError.relayProtocol("UDP open refused") }
+              (30...300).contains(wireRead(b,4,2)), wireRead(b,6,2) == UInt64(DatagramFrame.maximumPayload) else { throw DroidBridgeError.relayProtocol("UDP open refused") }
     }
     public func close() async {
         guard !closed else { return }

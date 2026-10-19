@@ -30,7 +30,7 @@ final class EngineBridge: @unchecked Sendable {
         self.delegate = delegate
         var config = db_engine_config_t()
         config.maximum_flows = maximumFlows
-        config.mtu = 1280
+        config.mtu = 1500 // DB_TUNNEL_MTU; the engine refuses any other value
         config.idle_timeout_ms = 5 * 60 * 1000
         config.context = Unmanaged.passUnretained(self).toOpaque()
         config.emit_packet = db_bridge_emit

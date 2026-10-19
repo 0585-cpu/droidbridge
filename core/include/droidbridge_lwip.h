@@ -1,4 +1,4 @@
-/* lwIP NO_SYS adapter: a single virtual netif (198.18.0.1/30, MTU 1280) driven by packet callbacks. */
+/* lwIP NO_SYS adapter: a single virtual netif (198.18.0.1/30, MTU DB_TUNNEL_MTU) driven by packet callbacks. */
 #ifndef DROIDBRIDGE_LWIP_H
 #define DROIDBRIDGE_LWIP_H
 

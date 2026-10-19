@@ -1,5 +1,6 @@
 /* Minimal lwIP NO_SYS port: one netif at 198.18.0.1/30, packet in/out via engine callbacks. */
 #include "droidbridge_lwip.h"
+#include "droidbridge_packet.h"
 #include "lwip_port.h"
 
 #include "lwip/init.h"
@@ -42,7 +43,7 @@ static err_t db_netif_init(struct netif *netif) {
     netif->name[0] = 'd';
     netif->name[1] = 'b';
     netif->output = db_netif_output;
-    netif->mtu = 1280;
+    netif->mtu = DB_TUNNEL_MTU;
     netif->flags = NETIF_FLAG_UP | NETIF_FLAG_LINK_UP;
     return ERR_OK;
 }

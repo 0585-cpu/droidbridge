@@ -155,7 +155,7 @@ static void engine_emit(void *context, const uint8_t *packet, size_t length) {
     memcpy(scratch, packet, length);
     if (f->family == 6) {
         size_t n = ip.total_length - ip.header_length;
-        uint8_t segment[1280];
+        uint8_t segment[DB_TUNNEL_MTU];
         if (n > sizeof segment)
             return;
         memcpy(segment, packet + ip.header_length, n);
@@ -435,7 +435,7 @@ db_engine_t *db_engine_create(const db_engine_config_t *config) {
         return NULL;
     if (config->maximum_flows < 1 || config->maximum_flows > 256)
         return NULL;
-    if (config->mtu != 1280)
+    if (config->mtu != DB_TUNNEL_MTU)
         return NULL;
 
     db_engine_t *e = calloc(1, sizeof *e);
@@ -768,7 +768,7 @@ static udp_flow_t *udp_by_id(db_engine_t *e, db_flow_id_t id) {
     return NULL;
 }
 static void emit_udp(db_engine_t *e, const packet_tuple_t *k, const uint8_t *data, size_t len) {
-    uint8_t t[1240], out[1280];
+    uint8_t t[DB_TUNNEL_MTU - 20], out[DB_TUNNEL_MTU];
     write16(t, k->dport);
     write16(t + 2, k->sport);
     write16(t + 4, (uint16_t)(8 + len));
@@ -816,7 +816,7 @@ static void input_udp(db_engine_t *e, const db_ip_view_t *v, const uint8_t *t) {
     }
     uint64_t cap = v->family == 4 ? DB_CAP_UDP4 : DB_CAP_UDP6;
     if (!(e->capabilities & cap) || (!e->config.open_udp && !e->config.open_udp_endpoint) || !e->config.send_udp ||
-        !destination_allowed(e, v) || len > 1232 || key.dport == 0) {
+        !destination_allowed(e, v) || len > DB_UDP_MAX_PAYLOAD || key.dport == 0) {
         e->udp_drops++;
         return;
     }
@@ -942,7 +942,7 @@ db_engine_status_t db_engine_input_packet(db_engine_t *e, const uint8_t *p, size
         synthetic[2] = (uint8_t)(index >> 8);
         synthetic[3] = (uint8_t)index;
     }
-    uint8_t segment[1280], converted[1280];
+    uint8_t segment[DB_TUNNEL_MTU], converted[DB_TUNNEL_MTU];
     memcpy(segment, t, v.transport_length);
     segment[16] = segment[17] = 0;
     db_ip_view_t internal = {.family = 4, .protocol = 6};
@@ -961,7 +961,7 @@ db_engine_status_t db_engine_on_udp_data(db_engine_t *e, db_flow_id_t id, const 
     udp_flow_t *f = udp_by_id(e, id);
     if (!f)
         return DB_ENGINE_ERR_UNKNOWN_FLOW;
-    if (len > 1232) {
+    if (len > DB_UDP_MAX_PAYLOAD) {
         e->udp_drops++;
         return DB_ENGINE_ERR_ARGUMENT;
     }
@@ -1006,7 +1006,7 @@ db_engine_status_t db_engine_on_icmp_response(db_engine_t *e, db_flow_id_t id, c
                 return DB_ENGINE_ERR_UNKNOWN_FLOW;
             if (len != q.length || (len && memcmp(data, q.payload, len)))
                 return DB_ENGINE_ERR_STATE;
-            uint8_t t[1208] = {0}, out[1280];
+            uint8_t t[1208] = {0}, out[DB_TUNNEL_MTU];
             t[0] = q.tuple.family == 4 ? 0 : 129;
             memcpy(t + 4, q.echo, 4);
             if (len)

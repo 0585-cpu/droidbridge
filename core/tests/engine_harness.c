@@ -53,7 +53,7 @@ void harness_create_at_time(harness_t *h, uint16_t max_flows, uint32_t now_ms) {
     memset(h, 0, sizeof *h);
     h->now_ms = now_ms;
     db_engine_config_t cfg = {
-        .maximum_flows = max_flows, .mtu = 1280, .idle_timeout_ms = 300000,
+        .maximum_flows = max_flows, .mtu = DB_TUNNEL_MTU, .idle_timeout_ms = 300000,
         .emit_packet = cb_emit, .open_flow = cb_open, .send_flow = cb_send,
         .close_flow = cb_close, .send_dns = cb_dns, .random_u32 = cb_rand, .now_ms = cb_now,
         .context = h,

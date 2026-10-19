@@ -44,7 +44,7 @@ typedef uint32_t (*db_now_ms_fn)(void *context);
 
 typedef struct {
     uint16_t maximum_flows;   /* 1..256 */
-    uint16_t mtu;             /* must be 1280 for B1 */
+    uint16_t mtu;             /* must be DB_TUNNEL_MTU (1500) */
     uint64_t idle_timeout_ms;
     db_emit_packet_fn emit_packet;
     db_open_flow_fn open_flow;
@@ -71,7 +71,7 @@ typedef struct db_engine db_engine_t;
 db_engine_t *db_engine_create(const db_engine_config_t *config);
 void db_engine_destroy(db_engine_t *engine);
 
-/* Feed one IPv4/IPv6 packet (MTU 1280) from the tunnel. Unsupported traffic fails closed. */
+/* Feed one IPv4/IPv6 packet (up to DB_TUNNEL_MTU) from the tunnel. Unsupported traffic fails closed. */
 db_engine_status_t db_engine_input_packet(db_engine_t *engine, const uint8_t *packet, size_t length);
 /* Advance timers (call periodically). */
 void db_engine_poll(db_engine_t *engine);

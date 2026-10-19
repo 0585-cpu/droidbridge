@@ -31,7 +31,7 @@ class UdpRelaySessionTest {
         q.offer(ByteArray(0)); assertEquals(0,q.take()!!.size)
         q.close(); assertNull(q.take())
     }
-    @Test fun `loopback UDP preserves zero and 1232 datagrams rejects oversize and closes on EOF`() = runBlocking {
+    @Test fun `loopback UDP preserves zero and maximum datagrams rejects oversize and closes on EOF`() = runBlocking {
         DatagramSocket(0,InetAddress.getLoopbackAddress()).use { echo ->
             echo.soTimeout=3000
             val remote=DatagramSocket().apply { connect(echo.localSocketAddress) }
@@ -41,7 +41,7 @@ class UdpRelaySessionTest {
                     val bridgeClient=listener.accept()
                     var drops=0L
                     val session=async(Dispatchers.IO) { UdpRelaySession(bridgeClient,remote,30,RelayTrafficPolicy(),{drops++},{_,_->}).run() }
-                    for(length in listOf(0,1,1232)) {
+                    for(length in listOf(0,1,DatagramCodec.MAX_PAYLOAD)) {
                         val data=ByteArray(length) { it.toByte() }
                         client.getOutputStream().write(DatagramCodec.encode(RawDatagram(data,0,length.toLong())))
                         val received=DatagramPacket(ByteArray(2000),2000)
@@ -50,7 +50,7 @@ class UdpRelaySessionTest {
                         echo.send(DatagramPacket(received.data,received.length,received.socketAddress))
                         assertArrayEquals(data,DatagramCodec.read(client.getInputStream(),1)!!.payload)
                     }
-                    echo.send(DatagramPacket(ByteArray(1233),1233,InetSocketAddress(InetAddress.getLoopbackAddress(),remote.localPort)))
+                    echo.send(DatagramPacket(ByteArray(DatagramCodec.MAX_PAYLOAD+1),DatagramCodec.MAX_PAYLOAD+1,InetSocketAddress(InetAddress.getLoopbackAddress(),remote.localPort)))
                     echo.send(DatagramPacket(byteArrayOf(9),1,InetSocketAddress(InetAddress.getLoopbackAddress(),remote.localPort)))
                     assertArrayEquals(byteArrayOf(9),DatagramCodec.read(client.getInputStream(),1)!!.payload)
                     client.shutdownOutput()

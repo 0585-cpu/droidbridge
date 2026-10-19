@@ -327,7 +327,7 @@ def build_extension_document() -> dict:
         ("open_tcp_ipv6", "OPEN_TCP", v6),
         ("open_udp_ipv4", "OPEN_UDP", v4 + struct.pack("!H",120)),
         ("open_udp_ipv6", "OPEN_UDP", v6 + struct.pack("!H",120)),
-        ("open_udp_ok", "OPEN_UDP_OK", struct.pack("!IHH",7,120,1232)),
+        ("open_udp_ok", "OPEN_UDP_OK", struct.pack("!IHH",7,120,1472)),
         ("open_udp_error", "OPEN_UDP_ERROR", struct.pack("!HH",14,0)),
         ("udp_close", "UDP_CLOSE", b""),
         ("open_udp_association4", "OPEN_UDP_ASSOCIATION", bytes.fromhex("04000078")),

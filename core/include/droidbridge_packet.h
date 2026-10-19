@@ -6,6 +6,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Tunnel MTU shared by utun, the engine and lwIP. 1500 lets overlay VPNs on top (Tailscale's
+ * WireGuard packets reach ~1340 bytes) through without fragments the engine cannot reassemble. */
+#define DB_TUNNEL_MTU 1500
+/* Largest relayed UDP payload: an IPv4 datagram at DB_TUNNEL_MTU (IPv6 is held to 1452 by the MTU). */
+#define DB_UDP_MAX_PAYLOAD 1472
+
 #ifdef __cplusplus
 extern "C" {
 #endif

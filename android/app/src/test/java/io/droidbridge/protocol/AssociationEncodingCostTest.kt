@@ -19,8 +19,8 @@ class AssociationEncodingCostTest {
     }
 
     @Test fun prefixLengthCannotExceedAvailableBytesOrDatagramLimit() {
-        val buffer = ByteArray(1233)
-        for (length in listOf(-1, 1233, Int.MAX_VALUE)) {
+        val buffer = ByteArray(DatagramCodec.MAX_PAYLOAD + 1)
+        for (length in listOf(-1, DatagramCodec.MAX_PAYLOAD + 1, Int.MAX_VALUE)) {
             assertFailsWith<DbpProtocolException> {
                 AssociationDatagramCodec.encode(buffer, length, 1, 0, 4, byteArrayOf(1, 1, 1, 1), 53)
             }
@@ -28,7 +28,7 @@ class AssociationEncodingCostTest {
         assertFailsWith<DbpProtocolException> {
             AssociationDatagramCodec.encode(ByteArray(1), 2, 1, 0, 4, byteArrayOf(1, 1, 1, 1), 53)
         }
-        for (size in listOf(0, 1232)) {
+        for (size in listOf(0, DatagramCodec.MAX_PAYLOAD)) {
             val frame = AssociationDatagramCodec.encode(buffer, size, 1, 0xffffffffL, 6, ByteArray(16) { 1 }, 443)
             val decoded = AssociationDatagramCodec.read(frame.inputStream(), 1, 6)!!
             assertEquals(size, decoded.payload.size)
