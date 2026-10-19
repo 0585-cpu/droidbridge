@@ -35,8 +35,8 @@ public struct PfRuleBuilder: Sendable {
         // these, DNS breaks whenever Tailscale runs. Placed after the physical blocks so these
         // ranges still never leave a listed physical interface; Tailscale's encrypted underlay
         // itself goes out through our utun.
-        // shortcut: an interface hotplugged after start is not in `physical`, so tailnet-range
-        // packets could leave it; rebuild the anchor on interface changes if that matters.
+        // An interface hotplugged after start is not in `physical`; the helper reloads the anchor
+        // with it on every interface change (HelperService.blockNewPhysical).
         lines.append("pass out quick to 100.64.0.0/10")
         lines.append("pass out quick inet6 to fd7a:115c:a1e0::/48")
         return lines.joined(separator: "\n") + "\n"

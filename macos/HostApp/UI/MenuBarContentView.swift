@@ -142,6 +142,13 @@ struct MenuBarContentView: View {
                     .disabled(adapter.helperOperationInProgress || actionRunning)
             }
 
+            if let limit = adapter.tunnelMetrics?.peerDatagramLimit, limit < DatagramFrame.maximumPayload {
+                Label("휴대폰 앱이 이전 버전이에요. \(limit)바이트보다 큰 UDP 패킷(Tailscale 등)은 전달되지 않아요. 휴대폰 앱을 업데이트해 주세요.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(Color(red: 0.76, green: 0.43, blue: 0.10))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             VStack(spacing: 0) {
                 infoRow("iphone.gen3", "휴대폰", deviceText)
                 Divider().padding(.leading, 44)

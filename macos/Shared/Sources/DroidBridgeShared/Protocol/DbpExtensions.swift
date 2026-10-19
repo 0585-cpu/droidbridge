@@ -62,8 +62,14 @@ func wireInteger<T: FixedWidthInteger>(_ value: T) -> Data { withUnsafeBytes(of:
 func wireRead(_ b: [UInt8], _ offset: Int, _ length: Int) -> UInt64 { b[offset..<(offset+length)].reduce(0) { ($0 << 8) | UInt64($1) } }
 
 public struct DatagramFrame: Sendable, Equatable {
-    // IPv4 UDP at the 1500-byte tunnel MTU; the phone must advertise the same value.
+    // IPv4 UDP at the 1500-byte tunnel MTU. A phone advertising less lowers it per stream.
     public static let maximumPayload = 1472
+    /// Smallest limit a phone may advertise; anything lower is a broken peer, not an old one.
+    public static let minimumPeerLimit = 512
+    /// Reads the OPEN_UDP_OK limit; it never raises ours, because our decoder caps what we accept.
+    public static func peerLimit(_ advertised: UInt64) -> Int? {
+        advertised >= UInt64(minimumPeerLimit) ? min(Int(advertised), maximumPayload) : nil
+    }
     public let payload: Data
     public let inbound: Bool
     public let sequence: UInt32
@@ -94,11 +100,19 @@ public final class DatagramQueue: @unchecked Sendable {
     private var bytes = 0
     private var dropped: UInt64 = 0
     private var closed = false
+    private var limit = DatagramFrame.maximumPayload
     public init() {}
+    /// Drops what the phone cannot take: it rejects an oversized datagram by closing the stream.
+    public func restrict(to maximum: Int) {
+        lock.withLock {
+            limit = min(limit, maximum)
+            packets.removeAll { if $0.count > limit { bytes -= $0.count; dropped &+= 1; return true }; return false }
+        }
+    }
     @discardableResult public func append(_ data: Data) -> Bool {
         lock.withLock {
             guard !closed else { return false }
-            guard data.count <= DatagramFrame.maximumPayload else { dropped &+= 1; return false }
+            guard data.count <= limit else { dropped &+= 1; return false }
             let needsWake = packets.isEmpty
             while packets.count >= 64 || bytes + data.count > 256 * 1024 {
                 bytes -= packets.removeFirst().count; dropped &+= 1

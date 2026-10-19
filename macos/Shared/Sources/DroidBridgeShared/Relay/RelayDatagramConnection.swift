@@ -19,6 +19,8 @@ public actor RelayDatagramConnection {
     private var expectedSequence: UInt32 = 0
     private var gaps: UInt64 = 0
     private var receivedSequence = false
+    /// The phone's datagram limit from OPEN_UDP_OK; below ours means an older phone app.
+    public private(set) var peerLimit: Int?
     public init(flowId: UInt32, destination: OpenDestination, secret: Data, transport: any RelayTransport,
                 delegate: any RelayDatagramDelegate, clientNonce: UInt64 = .random(in: 1 ... .max)) {
         self.flowId = flowId; self.destination = destination; self.delegate = delegate
@@ -53,7 +55,9 @@ public actor RelayDatagramConnection {
         let (header, payload) = try await session.read(serverNonce: nonce)
         let b = [UInt8](payload)
         guard !closed, header.type == .openUDPOk, b.count == 8,
-              (30...300).contains(wireRead(b,4,2)), wireRead(b,6,2) == UInt64(DatagramFrame.maximumPayload) else { throw DroidBridgeError.relayProtocol("UDP open refused") }
+              (30...300).contains(wireRead(b,4,2)), let limit = DatagramFrame.peerLimit(wireRead(b,6,2)) else { throw DroidBridgeError.relayProtocol("UDP open refused") }
+        queue.restrict(to: limit)
+        peerLimit = limit
     }
     public func close() async {
         guard !closed else { return }

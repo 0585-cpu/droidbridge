@@ -34,7 +34,7 @@ func runExtensionChecks(_ r: CheckRunner) async {
 
 private let extensionSecret = Data(repeating: 3, count: 32)
 private actor ExtensionTransport: RelayTransport {
-    enum Mode: Sendable { case normal, badNonce, badHMAC, badHMACSlowClose, truncatedCaps, legacy, blockedHello, blockedQuery, blockedSend, wrongDirection }
+    enum Mode: Sendable { case normal, badNonce, badHMAC, badHMACSlowClose, truncatedCaps, legacy, blockedHello, blockedQuery, blockedSend, wrongDirection, oldPhone, brokenLimit }
     let mode: Mode
     var started = false
     var cancelled = false
@@ -62,7 +62,10 @@ private actor ExtensionTransport: RelayTransport {
             type = .capabilitiesResponse
             var body = Data(repeating: 0, count: 59); body[0] = 1; body[8] = 15; body[16] = 42
             payload = Data([0,59]) + body
-        case .openUDP: type = .openUDPOk; payload = Data([0,0,0,7,0,120,5,192]) // max payload 1472
+        case .openUDP:
+            type = .openUDPOk
+            // 1472 now; 1232 from a phone app built before the 1500-byte MTU; 100 from a broken peer.
+            payload = Data([0,0,0,7,0,120]) + (mode == .oldPhone ? Data([4,208]) : mode == .brokenLimit ? Data([0,100]) : Data([5,192]))
         case .dnsQuery: type = .dnsResponse; payload = Data(data.dropFirst(64))
         case .icmpEcho:
             type = .icmpResponse
@@ -75,7 +78,7 @@ private actor ExtensionTransport: RelayTransport {
         var response = DbpCodec.frame(secret: extensionSecret, header: header, payload: payload)
         if (mode == .badHMAC || mode == .badHMACSlowClose) && request.type != .hello { response[32] ^= 1 }
         inbox.append(mode == .truncatedCaps && request.type == .capabilities ? Data(response.prefix(64)) : response)
-        if request.type == .openUDP {
+        if request.type == .openUDP, mode != .oldPhone, mode != .brokenLimit {
             inbox.append(try DatagramFrame(payload: Data(), inbound: mode != .wrongDirection, sequence: 0).encoded())
             inbox.append(try DatagramFrame(payload: Data(repeating: 9, count: DatagramFrame.maximumPayload), inbound: true, sequence: 2).encoded())
         }
@@ -149,6 +152,23 @@ func runExtensionRelayChecks(_ r: CheckRunner) async {
         let cancelled = await transport.cancelled
         r.check(cancelled && recorder.received.isEmpty && recorder.closedCount == 1, "UDP bad auth/direction/deadline closes without delivery")
     }
+    // An older phone app advertises a smaller limit: keep UDP working and drop only what it would reject.
+    let oldPhone = ExtensionTransport(.oldPhone), oldRecorder = DatagramRecorder()
+    let oldFlow = RelayDatagramConnection(flowId: 2, destination: .ipv4("1.1.1.1",443), secret: extensionSecret, transport: oldPhone, delegate: oldRecorder)
+    oldFlow.enqueueFromCore(Data(count: 1300))
+    oldFlow.enqueueFromCore(Data(count: 1232))
+    do { try await oldFlow.start() } catch { r.check(false, "UDP opens against an older phone app: \(error)") }
+    oldFlow.enqueueFromCore(Data(count: 1233))
+    oldFlow.enqueueFromCore(Data(count: 10))
+    try? await Task.sleep(for: .milliseconds(20))
+    let oldSizes = await oldPhone.rawFrames.compactMap { try? DatagramFrame.decode($0).payload.count }
+    let oldLimit = await oldFlow.peerLimit
+    r.check(oldLimit == 1232 && oldSizes == [1232, 10] && oldFlow.drops == 2,
+            "an older phone's smaller UDP limit applies to queued and later packets")
+    await oldFlow.close()
+    let broken = ExtensionTransport(.brokenLimit), brokenRecorder = DatagramRecorder()
+    let brokenFlow = RelayDatagramConnection(flowId: 3, destination: .ipv4("1.1.1.1",443), secret: extensionSecret, transport: broken, delegate: brokenRecorder)
+    do { try await brokenFlow.start(timeout: .milliseconds(200)); r.check(false, "an implausible UDP limit must refuse the open") } catch {}
     let closedTransport = ExtensionTransport(), closedRecorder = DatagramRecorder()
     let never = RelayDatagramConnection(flowId: 1, destination: .ipv4("1.1.1.1",443), secret: extensionSecret, transport: closedTransport, delegate: closedRecorder)
     await never.close()

@@ -58,7 +58,15 @@ public final class UDPAssociationQueue: @unchecked Sendable {
     private var bytes = 0
     private var dropped: UInt64 = 0
     private var closed = false
+    private var limit = DatagramFrame.maximumPayload
     public init() {}
+    /// Drops what the phone cannot take: it rejects an oversized datagram by closing the stream.
+    public func restrict(to maximum: Int) {
+        lock.withLock {
+            limit = min(limit, maximum)
+            packets.removeAll { if $0.payload.count > limit { bytes -= $0.payload.count; dropped &+= 1; return true }; return false }
+        }
+    }
     public func register(flow: UInt32, peer: UDPAssociationPeer) { lock.withLock { if !closed { peers[flow] = peer } } }
     public func remove(flow: UInt32) {
         lock.withLock {
@@ -69,7 +77,7 @@ public final class UDPAssociationQueue: @unchecked Sendable {
     @discardableResult public func append(flow: UInt32, payload: Data) -> Bool {
         lock.withLock {
             guard !closed, let peer = peers[flow] else { return false }
-            guard payload.count <= DatagramFrame.maximumPayload else { dropped &+= 1; return false }
+            guard payload.count <= limit else { dropped &+= 1; return false }
             let wake = packets.isEmpty
             while packets.count >= 64 || bytes + payload.count > 256 * 1024 {
                 bytes -= packets.removeFirst().payload.count; dropped &+= 1

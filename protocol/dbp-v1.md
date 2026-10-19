@@ -160,6 +160,8 @@ Peers advertising `UDP_ASSOCIATION = 1 << 10` accept authenticated message
 a reserved zero byte, and a big-endian uint16 idle timeout (30–300 seconds).
 The reply is the existing `OPEN_UDP_OK` or `OPEN_UDP_ERROR`. The successful reply
 retains its eight-byte layout and maximum datagram payload of 1472 bytes (IPv4 UDP at the 1500-byte tunnel MTU; IPv6 is held to 1452 by the MTU).
+The host treats that maximum as the relay's limit: it never sends a larger datagram on the
+stream, uses the smaller of the two limits, and refuses an advertised value below 512.
 Without this capability the host retains the existing per-destination `OPEN_UDP`.
 
 Each association stream owns one unconnected cellular UDP socket. The host groups

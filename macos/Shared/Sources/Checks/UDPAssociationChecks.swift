@@ -55,6 +55,15 @@ func runUDPAssociationChecks(_ r: CheckRunner) {
         r.check(queue.drops == 6 && queue.pop()?.payload == Data([6]), "association queue bounded to 64 packets with oldest dropped")
         queue.append(flow: 2, payload: Data(count: DatagramFrame.maximumPayload + 1))
         r.check(queue.drops == 7, "association oversized outbound counted")
+        let older = UDPAssociationQueue()
+        older.register(flow: 1, peer: peer)
+        older.append(flow: 1, payload: Data(count: 1300)); older.append(flow: 1, payload: Data(count: 1232))
+        older.restrict(to: 1232)
+        older.append(flow: 1, payload: Data(count: 1233))
+        r.check(older.drops == 2 && older.pop()?.payload.count == 1232 && older.pop() == nil,
+                "an older phone's limit drops queued and later oversized association packets")
+        r.check(DatagramFrame.peerLimit(1232) == 1232 && DatagramFrame.peerLimit(9000) == DatagramFrame.maximumPayload
+                && DatagramFrame.peerLimit(511) == nil, "the phone's limit only ever lowers ours and must be plausible")
         queue.close(); queue.register(flow: 3, peer: peer); queue.append(flow: 3, payload: Data())
         r.check(queue.pop() == nil, "closed association queue cannot reopen")
     } catch { r.check(false, "UDP association: \(error)") }

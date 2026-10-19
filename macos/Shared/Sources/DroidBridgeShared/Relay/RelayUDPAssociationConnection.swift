@@ -16,6 +16,8 @@ public actor RelayUDPAssociationConnection {
     private var closed = false
     private var sending = false
     private var sequence: UInt32 = 0
+    /// The phone's datagram limit from OPEN_UDP_OK; below ours means an older phone app.
+    public private(set) var peerLimit: Int?
     public init(token: UUID, family: UInt8, secret: Data, transport: any RelayTransport,
                 delegate: any RelayUDPAssociationDelegate, clientNonce: UInt64 = .random(in: 1 ... .max)) {
         self.token = token; self.family = family; self.delegate = delegate
@@ -53,9 +55,11 @@ public actor RelayUDPAssociationConnection {
         let (header, payload) = try await session.read(serverNonce: nonce)
         let bytes = [UInt8](payload)
         guard !closed, header.type == .openUDPOk, bytes.count == 8,
-              (30...300).contains(wireRead(bytes,4,2)), wireRead(bytes,6,2) == UInt64(DatagramFrame.maximumPayload) else {
+              (30...300).contains(wireRead(bytes,4,2)), let limit = DatagramFrame.peerLimit(wireRead(bytes,6,2)) else {
             throw DroidBridgeError.relayProtocol("UDP association refused")
         }
+        queue.restrict(to: limit)
+        peerLimit = limit
     }
     public func close() async {
         guard !closed else { return }

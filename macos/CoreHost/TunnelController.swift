@@ -57,6 +57,7 @@ final class TunnelController: NSObject, @unchecked Sendable {
     var activeUDPCount: Int { metricsSession?.engine?.activeUDP ?? 0 }
     var capabilities: RelayCapabilities? { metricsSession?.capabilities }
     var udpDrops: UInt64 { metricsSession?.udpDrops ?? 0 }
+    var peerDatagramLimit: Int? { metricsSession?.peerDatagramLimit }
     private func readPackets(session captured: TunnelSession) {
         guard lock.withLock({ session === captured }) else { return }
         packetSource.read { [weak self, weak captured] packets in
@@ -83,6 +84,7 @@ private final class TunnelSession: EngineBridgeDelegate, RelayFlowDelegate, Rela
     private var networkEpoch: UInt64 = 0
     private var operations: [UUID: Task<Void, Never>] = [:]
     private var retiredDrops: UInt64 = 0
+    private var lastPeerLimit: Int?
     private var negotiated: RelayCapabilities?
     private var capabilityTask: Task<Void, Never>?
     private let dns: RelayDNSClient
@@ -96,6 +98,9 @@ private final class TunnelSession: EngineBridgeDelegate, RelayFlowDelegate, Rela
         extensions = RelayExtensionClient(secret: secret, transportFactory: transportFactory)
     }
     var capabilities: RelayCapabilities? { lock.withLock { negotiated } }
+    /// Latest, not smallest: an updated phone app clears the warning on its next UDP stream.
+    var peerDatagramLimit: Int? { lock.withLock { lastPeerLimit } }
+    private func notePeerLimit(_ limit: Int?) { if let limit { lock.withLock { lastPeerLimit = limit } } }
     var udpDrops: UInt64 {
         let local = lock.withLock { retiredDrops &+ datagrams.values.reduce(0) { $0 &+ $1.drops } &+ associations.values.reduce(0) { $0 &+ $1.drops } }
         return local &+ (engine?.udpDrops ?? 0) &+ (capabilities?.udpDrops ?? 0)
@@ -236,7 +241,9 @@ private final class TunnelSession: EngineBridgeDelegate, RelayFlowDelegate, Rela
                         transport: transportFactory(), delegate: self)
                     associations[attached.token] = conn
                     conn.register(flow: flow, peer: peer)
-                    Task { try? await conn.start() } // Failure closes through the token-scoped delegate.
+                    Task { // Failure closes through the token-scoped delegate.
+                        if (try? await conn.start()) != nil { self.notePeerLimit(await conn.peerLimit) }
+                    }
                 } else { associations[attached.token]?.register(flow: flow, peer: peer) }
                 return true
             }
@@ -247,7 +254,9 @@ private final class TunnelSession: EngineBridgeDelegate, RelayFlowDelegate, Rela
         let conn = RelayDatagramConnection(flowId: flow, destination: destination, secret: secret, transport: transportFactory(), delegate: self)
         let accepted = lock.withLock { guard !stopped else { return false }; datagrams[flow] = conn; return true }
         guard accepted else { return }
-        Task { do { try await conn.start() } catch { self.engine?.udpClosed(flow) } }
+        Task {
+            do { try await conn.start(); self.notePeerLimit(await conn.peerLimit) } catch { self.engine?.udpClosed(flow) }
+        }
     }
     func engineSendUDP(_ flow: UInt32, _ data: Data) {
         lock.withLock {
