@@ -488,6 +488,27 @@ private func testHotpluggedInterfaceJoinsKillSwitch() throws {
     service.blockNewPhysical(listing: { ["en7"] })
     check(loads.count == 1 && loads[0] == PfRuleBuilder(utun: "utun9", physical: ["en0", "en7"]).anchorBody(),
           "a hotplugged interface is blocked before the tailnet pass, and a removed one stays blocked")
+    check(NetworkInterfaces.kernelEthernet().allSatisfy { $0.hasPrefix("en") }, "only en* kernel interfaces are listed")
+
+    // configd dropped bridge9 on a USB LAN hotplug; the next interface change recreates it.
+    let ifconfig = "/sbin/ifconfig", name = TailscaleUnderlayInterface.name
+    let recreate = ScriptedRunner([
+        ExpectedCommand(executable: ifconfig, arguments: [name, "destroy"], result: result(1, "does not exist")),
+        ExpectedCommand(executable: ifconfig, arguments: [name, "create"], result: result()),
+        ExpectedCommand(executable: ifconfig, arguments: [name, "inet", TailscaleUnderlayInterface.address,
+                                                          "netmask", "255.255.255.255", "up"], result: result()),
+    ])
+    var present = false
+    let healing = HelperService(pfController: PfController(run: { _, _, _ in result() }),
+                                underlay: TailscaleUnderlayInterface(run: recreate.run, exists: { present }))
+    healing.blockNewPhysical(listing: { [] })
+    check(recreate.calls.isEmpty, "no Tailscale interface is created while the tunnel is down")
+    try healing.seedKillSwitchForChecks(utun: "utun9", physical: ["en0"])
+    healing.blockNewPhysical(listing: { ["en0"] })
+    check(recreate.isEmpty, "a vanished Tailscale interface is recreated while the tunnel runs")
+    present = true
+    healing.blockNewPhysical(listing: { ["en0"] })
+    check(recreate.calls.count == 3, "an existing Tailscale interface is left alone")
 }
 
 if CommandLine.arguments.contains("--tcp-half-close-checks") {

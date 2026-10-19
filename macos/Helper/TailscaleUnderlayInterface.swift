@@ -11,9 +11,12 @@ final class TailscaleUnderlayInterface {
     static let address = "192.0.2.1" // TEST-NET-1: never a real destination
     private static let ifconfig = URL(fileURLWithPath: "/sbin/ifconfig")
     private let run: HelperCommandExecuting
+    let exists: () -> Bool
 
-    init(run: @escaping HelperCommandExecuting = HelperCommandRunner.run) {
+    init(run: @escaping HelperCommandExecuting = HelperCommandRunner.run,
+         exists: @escaping () -> Bool = { if_nametoindex(TailscaleUnderlayInterface.name) != 0 }) {
         self.run = run
+        self.exists = exists
     }
 
     func create() {

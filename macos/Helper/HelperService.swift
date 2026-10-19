@@ -385,13 +385,17 @@ final class HelperService: NSObject, NSXPCListenerDelegate, DroidBridgeHelperPro
         blockedPhysical = []
     }
 
-    func blockNewPhysical(listing: () throws -> [String] = { try NetworkInterfaces.physical() }) {
-        // networksetup runs outside stateLock so status and Stop never wait on it.
-        let current: [String]
-        do { current = try listing() }
-        catch { return helperLog.error("could not list interfaces: \(error.localizedDescription, privacy: .public)") }
+    /// Kernel names, not networksetup: running networksetup on a USB LAN hotplug made configd
+    /// drop the bridges it does not manage, bridge9 included, and Tailscale then stopped.
+    func blockNewPhysical(listing: () -> [String] = NetworkInterfaces.kernelEthernet) {
+        let current = listing()
         stateLock.withLock {
             guard let utun = blockedUtun, pfController.isEnabled else { return }
+            // Anything else that makes configd reconcile bridges does the same; recreate it.
+            if let underlay, !underlay.exists() {
+                helperLog.notice("Tailscale interface disappeared; recreating it")
+                underlay.create()
+            }
             let added = current.filter { !blockedPhysical.contains($0) }
             guard !added.isEmpty else { return }
             do {
