@@ -268,9 +268,13 @@ public final class DroidBridgeCoordinatorAdapter {
     }
 
     public func disconnect() async {
-        guard !helperOperationInProgress, !transportOperationInProgress else { return }
+        // A stuck USB/relay operation must not leave Disconnect doing nothing while pf blocks the Mac.
+        guard !helperOperationInProgress, !transportOperationInProgress else {
+            if tunnelRunning { _ = await stopForQuit() }
+            return
+        }
         usbRecoveryPending = false
-        await adb.suspendRecovery()
+        suspendUSBRecovery()
         if tunnelRunning {
             await stopTunnel()
             guard !tunnelRunning else { return }
@@ -288,7 +292,7 @@ public final class DroidBridgeCoordinatorAdapter {
     /// deliberately bypasses the app-side operation guards.
     public func stopForQuit() async -> Bool {
         usbRecoveryPending = false
-        await adb.suspendRecovery()
+        suspendUSBRecovery()
         statusTask?.cancel()
         statusTask = nil
         do {
@@ -374,7 +378,7 @@ public final class DroidBridgeCoordinatorAdapter {
         guard beginHelperOperation() else { return }
         networkRecoveryInProgress = true
         usbRecoveryPending = false
-        await adb.suspendRecovery()
+        suspendUSBRecovery()
         defer { helperOperationInProgress = false; networkRecoveryInProgress = false }
         statusTask?.cancel()
         statusTask = nil
@@ -483,6 +487,13 @@ public final class DroidBridgeCoordinatorAdapter {
         let continuation = pairingApproval
         pairingApproval = nil
         continuation?.resume(returning: approved)
+    }
+
+    /// Never awaited before Stop: the USB actor waited behind a wedged phone for minutes once,
+    /// and Quit and Disconnect waited with it while pf kept the Mac offline. A revived USB
+    /// session cannot change routes, and the helper refuses a reconnect after Stop.
+    private func suspendUSBRecovery() {
+        Task { [adb] in await adb.suspendRecovery() }
     }
 
     private func beginHelperOperation() -> Bool {

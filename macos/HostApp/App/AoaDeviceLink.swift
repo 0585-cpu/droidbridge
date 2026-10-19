@@ -56,7 +56,8 @@ actor AoaDeviceLink: RelayDeviceTransport {
 
     func setRecoveryHandler(_ handler: @escaping @Sendable () async -> Void) { recovered = handler }
 
-    func devices() throws -> [AdbDevice] {
+    // Off the actor: a libusb enumeration that hangs on a wedged phone must not block Stop.
+    nonisolated func devices() throws -> [AdbDevice] {
         try LibusbAccessoryTransport.devices(libraryPath: libraryPath).map {
             AdbDevice(serial: $0.id, state: .authorized, model: $0.name, transportId: $0.location)
         }

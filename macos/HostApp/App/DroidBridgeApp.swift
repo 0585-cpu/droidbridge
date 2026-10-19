@@ -95,10 +95,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if restored || (!adapter.tunnelRunning && !adapter.operationInProgress) { return .terminateNow }
         Task { @MainActor in
-            await adapter.disconnect()
-            // disconnect() skips while another operation runs; restore through the helper regardless.
-            var ok = true
-            if adapter.tunnelRunning || adapter.operationInProgress { ok = await adapter.stopForQuit() }
+            // Straight to the helper: a graceful USB disconnect can wait on a wedged phone, and
+            // a second Quit then forces exit before the network is restored.
+            let ok = await adapter.stopForQuit()
             if !ok {
                 // Stay open so fail-closed protection can still be released, but never silently.
                 NSApplication.shared.activate(ignoringOtherApps: true)
