@@ -504,6 +504,24 @@ static void test_upload_window_tracks_relay_consumption(void) {
     }
 }
 
+static void test_synack_advertises_mss_for_1500_byte_tunnel(void) {
+    harness_t h; harness_create(&h, 4);
+    harness_ingest_syn(&h, 42002, REMOTE, 443);
+    emitted_packet_t synack;
+    ASSERT_TRUE(harness_take_synack(&h, &synack));
+    const uint8_t *tcp = synack.bytes + (synack.bytes[0] & 0x0f) * 4;
+    size_t options_end = (size_t)(tcp[12] >> 4) * 4;
+    int mss = -1;
+    for (size_t i = 20; i + 1 < options_end;) {
+        if (tcp[i] == 0) break;
+        if (tcp[i] == 1) { i++; continue; }
+        if (tcp[i] == 2 && tcp[i + 1] == 4) mss = (tcp[i + 2] << 8) | tcp[i + 3];
+        i += tcp[i + 1] ? tcp[i + 1] : 1;
+    }
+    ASSERT_EQ_INT(1440, mss); /* 1200 was sized for the old 1280-byte MTU */
+    harness_destroy(&h);
+}
+
 static void test_partial_relay_acceptance_does_not_credit_buffered_tail(void) {
     harness_t h; harness_create(&h, 4);
     harness_ingest_syn(&h, 42001, REMOTE, 443); harness_take_synack(&h, NULL);
@@ -612,4 +630,5 @@ void run_packet_engine_tcp_tests(void) {
     RUN(test_eof_waiting_for_peer_fin_is_bounded);
     RUN(test_passive_eof_close_releases_flow_after_fin_ack);
     RUN(test_reconnect_after_tcp_timers_have_started);
+    RUN(test_synack_advertises_mss_for_1500_byte_tunnel);
 }

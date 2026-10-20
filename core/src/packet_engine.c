@@ -39,10 +39,10 @@ typedef struct {
     int mac_fin_notified;
     uint32_t half_close_touched;
     uint8_t *mac_buffer; /* Mac data awaiting relay open or relay backpressure */
-    size_t mac_buffer_len;
+    size_t mac_buffer_off, mac_buffer_len, mac_buffer_cap; /* live bytes: off..off+len */
     size_t relay_queued;   /* bytes currently in lwIP sndbuf for this flow */
     uint8_t *relay_buffer; /* relay data waiting for space in the lwIP send buffer */
-    size_t relay_buffer_len;
+    size_t relay_buffer_off, relay_buffer_len, relay_buffer_cap;
 } flow_t;
 
 #define DB_UDP_LIMIT 256
@@ -192,14 +192,15 @@ static int drain_mac_buffer(flow_t *f) {
     db_engine_t *e = f->engine;
     if (!f->relay_opened || f->mac_buffer_len == 0)
         return 0;
-    long accepted = e->config.send_flow(e->config.context, f->id, f->mac_buffer, f->mac_buffer_len);
+    long accepted = e->config.send_flow(e->config.context, f->id, f->mac_buffer + f->mac_buffer_off, f->mac_buffer_len);
     if (accepted == DB_SEND_ERROR)
         return -1;
     if (accepted == DB_SEND_AGAIN || accepted == 0)
         return 0;
     size_t took = (size_t)accepted >= f->mac_buffer_len ? f->mac_buffer_len : (size_t)accepted;
-    memmove(f->mac_buffer, f->mac_buffer + took, f->mac_buffer_len - took);
+    f->mac_buffer_off += took;
     f->mac_buffer_len -= took;
+    if (f->mac_buffer_len == 0) f->mac_buffer_off = 0;
     if ((f->relay_eof || f->state == FLOW_MAC_CLOSED) && e->config.now_ms)
         f->half_close_touched = e->config.now_ms(e->config.context);
     if (f->conn_pcb)
@@ -207,28 +208,40 @@ static int drain_mac_buffer(flow_t *f) {
     return 0;
 }
 
+/* Consuming only advances off; the live bytes move at most once per refill, when the tail
+ * runs out, instead of on every partial drain (that was quadratic under backpressure). */
+static int buffer_append(uint8_t **buf, size_t *off, size_t *len, size_t *cap, const uint8_t *data, size_t n) {
+    if (*off + *len + n > *cap) {
+        if (*off) {
+            memmove(*buf, *buf + *off, *len);
+            *off = 0;
+        }
+        if (*len + n > *cap) {
+            size_t want = *cap ? *cap : 4096;
+            while (want < *len + n)
+                want *= 2;
+            uint8_t *grown = realloc(*buf, want);
+            if (grown == NULL)
+                return -1;
+            *buf = grown;
+            *cap = want;
+        }
+    }
+    memcpy(*buf + *off + *len, data, n);
+    *len += n;
+    return 0;
+}
+
 static int buffer_mac_data(flow_t *f, const uint8_t *data, size_t len) {
     if (f->mac_buffer_len + len > DB_MAC_BUFFER_MAX)
         return -1; /* overflow -> caller resets flow */
-    uint8_t *grown = realloc(f->mac_buffer, f->mac_buffer_len + len);
-    if (grown == NULL)
-        return -1;
-    f->mac_buffer = grown;
-    memcpy(f->mac_buffer + f->mac_buffer_len, data, len);
-    f->mac_buffer_len += len;
-    return 0;
+    return buffer_append(&f->mac_buffer, &f->mac_buffer_off, &f->mac_buffer_len, &f->mac_buffer_cap, data, len);
 }
 
 static int buffer_relay_data(flow_t *f, const uint8_t *data, size_t len) {
     if (len > DB_RELAY_QUEUE_MAX - f->relay_queued - f->relay_buffer_len)
         return -1;
-    uint8_t *grown = realloc(f->relay_buffer, f->relay_buffer_len + len);
-    if (grown == NULL)
-        return -1;
-    f->relay_buffer = grown;
-    memcpy(f->relay_buffer + f->relay_buffer_len, data, len);
-    f->relay_buffer_len += len;
-    return 0;
+    return buffer_append(&f->relay_buffer, &f->relay_buffer_off, &f->relay_buffer_len, &f->relay_buffer_cap, data, len);
 }
 
 static int drain_relay_buffer(flow_t *f) {
@@ -243,15 +256,16 @@ static int drain_relay_buffer(flow_t *f) {
             chunk = DB_RELAY_QUEUE_MAX - f->relay_queued;
         if (chunk == 0)
             break;
-        if (tcp_write(f->conn_pcb, f->relay_buffer, (u16_t)chunk, TCP_WRITE_FLAG_COPY) != ERR_OK)
+        if (tcp_write(f->conn_pcb, f->relay_buffer + f->relay_buffer_off, (u16_t)chunk, TCP_WRITE_FLAG_COPY) != ERR_OK)
             break;
-        memmove(f->relay_buffer, f->relay_buffer + chunk, f->relay_buffer_len - chunk);
+        f->relay_buffer_off += chunk;
         f->relay_buffer_len -= chunk;
         f->relay_queued += chunk;
     }
     if (f->relay_buffer_len == 0) {
         free(f->relay_buffer);
         f->relay_buffer = NULL;
+        f->relay_buffer_off = f->relay_buffer_cap = 0;
     }
     return f->conn_pcb ? tcp_output(f->conn_pcb) : ERR_CONN;
 }

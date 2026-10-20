@@ -24,13 +24,13 @@
 #define LWIP_STATS 0
 
 #define MEM_ALIGNMENT 8   /* 64-bit: pbuf/pointer alignment */
-#define MEM_SIZE (4 * 1024 * 1024)
+#define MEM_SIZE (8 * 1024 * 1024) /* 128 flows x TCP_SND_BUF is 4 MiB; leave room for SYN-ACKs and ACKs */
 #define MEMP_NUM_TCP_PCB 320
 #define MEMP_NUM_TCP_PCB_LISTEN 260
 #define MEMP_NUM_TCP_SEG 512
 #define PBUF_POOL_SIZE 512
 
-#define TCP_MSS 1200
+#define TCP_MSS 1440 /* IPv6 at the 1500-byte tunnel MTU; IPv4 could use 1460 */
 #define TCP_WND (32 * 1024)   /* u16 window cap; 64 KiB per-flow app buffer is enforced Swift-side */
 #define TCP_SND_BUF (32 * 1024)
 #define TCP_SND_QUEUELEN (4 * (TCP_SND_BUF / TCP_MSS))
