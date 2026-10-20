@@ -67,6 +67,25 @@ func runAoaRecoveryChecks() async throws {
     try await link.removeForward(serial: "aoa:test-phone", hostPort: 27183)
     precondition(factory.sessions[1].isStopped)
 
+    // Sleep closes the session without a recovery storm; wake reopens it with the same services.
+    let sleeping = RecoveryFactory()
+    let sleeper = AoaDeviceLink(sessionFactory: sleeping.make, retryDelays: [.milliseconds(10)])
+    await sleeper.setRecoveryHandler { sleeping.recovered() }
+    await sleeper.resumeAfterWake()
+    try await Task.sleep(for: .milliseconds(30))
+    precondition(sleeping.sessions.isEmpty, "Wake without a prior sleep opens nothing")
+    try await sleeper.forward(serial: "aoa:test-phone", hostPort: 27183, devicePort: 27183)
+    await sleeper.prepareForSleep()
+    try await Task.sleep(for: .milliseconds(40))
+    precondition(sleeping.sessions[0].isStopped && sleeping.sessions.count == 1, "Sleep closes the session and does not reopen it")
+    await sleeper.resumeAfterWake()
+    try await awaitRecovery("reopen after wake") { sleeping.recoveries == 1 }
+    precondition(sleeping.sessions.count == 2 && sleeping.sessions[1].isConnected && sleeping.sessions[1].enabled == [.relay])
+    try await sleeper.removeForward(serial: "aoa:test-phone", hostPort: 27183)
+    await sleeper.prepareForSleep(); await sleeper.resumeAfterWake()
+    try await Task.sleep(for: .milliseconds(30))
+    precondition(sleeping.sessions.count == 2, "Sleep and wake leave a stopped relay closed")
+
     let bounded = RecoveryFactory(); bounded.failRetries = true
     let failing = AoaDeviceLink(sessionFactory: bounded.make, retryDelays: [.milliseconds(1), .milliseconds(1), .milliseconds(1)])
     try await failing.forward(serial: "aoa:test-phone", hostPort: 27183, devicePort: 27183)

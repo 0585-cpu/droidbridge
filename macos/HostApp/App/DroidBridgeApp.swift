@@ -33,6 +33,7 @@ struct DroidBridgeApp: App {
     fileprivate static func makeAdapter() -> DroidBridgeCoordinatorAdapter {
         let library = Bundle.main.bundleURL.appendingPathComponent("Contents/Frameworks/libusb-1.0.0.dylib")
         let adb = AoaDeviceLink(libraryPath: library.path)
+        SystemSleepObserver.install(link: adb)
         guard let keychainAccessGroup = RuntimeSigningIdentity.keychainAccessGroup() else {
             preconditionFailure("DroidBridgeTeamIdentifier is missing or invalid")
         }

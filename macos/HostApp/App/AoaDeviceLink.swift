@@ -1,4 +1,5 @@
 import Foundation
+import IOKit.pwr_mgt
 import OSLog
 import DroidBridgeShared
 import DroidBridgeUSB
@@ -30,6 +31,7 @@ actor AoaDeviceLink: RelayDeviceTransport {
     private var generation: UInt64 = 0
     private var established = false
     private var recoveryEnabled = false
+    private var asleep = false
     private var recovered: @Sendable () async -> Void = {}
 
     init(libraryPath: String) {
@@ -109,6 +111,24 @@ actor AoaDeviceLink: RelayDeviceTransport {
         if opening != nil { retireSession() }
     }
 
+    /// Closing the lid suspended USB under the open session, and tearing that broken session down
+    /// after wake hung libusb for the whole process until relaunch. Close it while the phone answers.
+    func prepareForSleep() {
+        guard recoveryEnabled, services.contains(.relay), selected != nil else { return }
+        asleep = true
+        recovery?.cancel(); recovery = nil
+        retireSession()
+        logger.notice("USB session closed for system sleep")
+    }
+
+    func resumeAfterWake() {
+        guard asleep else { return }
+        asleep = false
+        guard recoveryEnabled, services.contains(.relay), let serial = selected, recovery == nil else { return }
+        let expected = generation
+        recovery = Task { [weak self] in await self?.recover(serial: serial, expected: expected) }
+    }
+
     func removeForward(serial: String, hostPort: UInt16) async throws {
         guard serial == selected else { return }
         services.remove(hostPort == 27183 ? .relay : .pairing)
@@ -182,5 +202,40 @@ actor AoaDeviceLink: RelayDeviceTransport {
         }
         if generation == expected { recovery = nil }
         logger.error("USB automatic retries exhausted; protection remains active")
+    }
+}
+
+/// IOKit holds system sleep until each registered client replies (up to 30 s), so the USB session
+/// is closed before the USB stack suspends rather than after.
+final class SystemSleepObserver: @unchecked Sendable {
+    // iokit_common_msg(...) values; the C macros are not imported into Swift.
+    private static let canSystemSleep: natural_t = 0xe000_0270
+    private static let systemWillSleep: natural_t = 0xe000_0280
+    private static let systemHasPoweredOn: natural_t = 0xe000_0300
+    nonisolated(unsafe) private static var installed: SystemSleepObserver? // set once at launch
+    private let link: AoaDeviceLink
+    private var root: io_connect_t = 0
+    private var port: IONotificationPortRef?
+    private var notifier: io_object_t = 0
+
+    static func install(link: AoaDeviceLink) { installed = SystemSleepObserver(link: link) }
+
+    private init(link: AoaDeviceLink) {
+        self.link = link
+        root = IORegisterForSystemPower(Unmanaged.passUnretained(self).toOpaque(), &port, { refcon, _, message, argument in
+            guard let refcon else { return }
+            Unmanaged<SystemSleepObserver>.fromOpaque(refcon).takeUnretainedValue().handle(message, argument)
+        }, &notifier)
+        if let port { IONotificationPortSetDispatchQueue(port, .main) }
+    }
+
+    private func handle(_ message: natural_t, _ argument: UnsafeMutableRawPointer?) {
+        let root = root, token = Int(bitPattern: argument), link = link
+        switch message {
+        case Self.canSystemSleep: IOAllowPowerChange(root, token)
+        case Self.systemWillSleep: Task { await link.prepareForSleep(); IOAllowPowerChange(root, token) }
+        case Self.systemHasPoweredOn: Task { await link.resumeAfterWake() }
+        default: break
+        }
     }
 }
