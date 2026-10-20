@@ -62,25 +62,26 @@ int main(void) {
     check_read_integrity();
     db_usb usb = {.bulk_transfer = delayed_transfer, .output = 1};
     unsigned char bytes[] = {1, 2, 3, 4};
+    int sent = -1;
     ready_after_ms = 1500;
-    require(db_usb_write(&usb, bytes, sizeof bytes) == sizeof bytes,
+    require(db_usb_write(&usb, bytes, sizeof bytes, &sent) == sizeof bytes && sent == sizeof bytes,
             "a 1.5-second phone scheduling stall must complete without losing the USB session");
     require(calls == 1, "a delayed write is one transfer, never a whole-frame retry");
 
     calls = 0; ready_after_ms = 60000;
     double began = now_seconds();
-    require(db_usb_write(&usb, bytes, sizeof bytes) == LIBUSB_ERROR_TIMEOUT,
+    require(db_usb_write(&usb, bytes, sizeof bytes, &sent) == LIBUSB_ERROR_TIMEOUT && sent == 0,
             "a persistently stalled USB endpoint must still time out");
     require(now_seconds() - began < 2.9, "a stuck native transfer must respect its bounded deadline");
     require(calls == 1, "a timed out transfer must not be resent");
 
     calls = 0; forced_result = LIBUSB_ERROR_TIMEOUT; partial = 1;
-    require(db_usb_write(&usb, bytes, sizeof bytes) == LIBUSB_ERROR_TIMEOUT,
-            "a partial timeout must invalidate framing, not look like a successful short write");
+    require(db_usb_write(&usb, bytes, sizeof bytes, &sent) == LIBUSB_ERROR_TIMEOUT && sent == 2,
+            "a partial timeout reports the accepted bytes so the caller continues after them");
     require(calls == 1, "partially transferred bytes must never be replayed");
 
-    calls = 0; forced_result = LIBUSB_ERROR_NO_DEVICE; partial = 0;
-    require(db_usb_write(&usb, bytes, sizeof bytes) == LIBUSB_ERROR_NO_DEVICE && calls == 1,
-            "physical detach remains an immediate error");
+    calls = 0; forced_result = LIBUSB_ERROR_NO_DEVICE; partial = 1;
+    require(db_usb_write(&usb, bytes, sizeof bytes, &sent) == LIBUSB_ERROR_NO_DEVICE && calls == 1 && sent == 0,
+            "physical detach remains an immediate error and its count is never trusted");
     puts("USB write deadline: transient stall, bounded failure, partial timeout and detach passed");
 }

@@ -29,6 +29,22 @@ public final class LibusbAccessoryTransport: AoaByteTransport, AoaControlDevice,
         }
     }
 
+    /// Seen after a charging-mode change at full charge: the phone's USB controller entered suspend
+    /// and every reopen failed at once (-1) until the cable was replugged. A port reset re-enumerates
+    /// the phone the same way; it may come back outside accessory mode.
+    public static func reset(libraryPath: String, location: String) throws {
+        try guarded("USB reset") {
+            let context = try create(libraryPath)
+            defer { db_usb_destroy(context) }
+            try requireSuccess(db_usb_open(context, location), "open the phone for a USB reset")
+            let result = db_usb_reset(context)
+            // NOT_FOUND means the device re-enumerated as a new device, which is the point.
+            guard result == 0 || result == -5 else { // LIBUSB_ERROR_NOT_FOUND
+                throw AoaError.usb("could not reset the USB port (USB error \(result))")
+            }
+        }
+    }
+
     private static let stall = OSAllocatedUnfairLock<String?>(initialState: nil)
     private static let stallLogger = Logger(subsystem: "io.droidbridge", category: "USBStall")
     /// A libusb call stuck on a wedged phone can hold libusb's process-wide locks, so later
@@ -106,6 +122,10 @@ public final class LibusbAccessoryTransport: AoaByteTransport, AoaControlDevice,
         guard result >= 0 else { throw AoaError.usb("could not \(action) (USB error \(result))") }
     }
 
+    private static let writeTimeout: Int32 = -7 // LIBUSB_ERROR_TIMEOUT
+    private static let slowPhoneAllowance: Duration = .seconds(20)
+    private var isClosing: Bool { condition.lock(); defer { condition.unlock() }; return closing }
+
     private func beginIO() throws -> OpaquePointer {
         condition.lock(); defer { condition.unlock() }
         guard !closing, let handle else { throw AoaError.usb("closed") }
@@ -148,8 +168,18 @@ public final class LibusbAccessoryTransport: AoaByteTransport, AoaControlDevice,
         do { try writeTrace.write(data, maximumPacketSize: Int(db_usb_out_packet_size(handle))) { chunk in
             var bytes = [UInt8](chunk)
             let started = ContinuousClock.now
-            let count = bytes.withUnsafeMutableBufferPointer {
-                db_usb_write(handle, $0.baseAddress, Int32($0.count))
+            let count = bytes.withUnsafeMutableBufferPointer { buffer -> Int32 in
+                var offset = 0
+                while true {
+                    var sent: Int32 = 0
+                    let result = db_usb_write(handle, buffer.baseAddress.map { $0 + offset }, Int32(buffer.count - offset), &sent)
+                    offset += Int(sent)
+                    if result >= 0 { return Int32(offset) }
+                    // A phone that is briefly too slow to drain (thermal throttling, GC) used to end
+                    // the session after 2.5 s. Keep what it took and wait; Stop and a dead device still end it.
+                    guard result == Self.writeTimeout, started.duration(to: .now) < Self.slowPhoneAllowance,
+                          !isClosing else { return result }
+                }
             }
             let elapsed = started.duration(to: .now)
             if count < 0 || elapsed >= .milliseconds(500) {

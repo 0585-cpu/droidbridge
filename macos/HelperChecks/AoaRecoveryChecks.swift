@@ -1,4 +1,5 @@
 import Foundation
+import os
 import DroidBridgeUSB
 
 private final class RecoverySession: AoaMultiplexing, @unchecked Sendable {
@@ -31,6 +32,8 @@ private final class RecoveryFactory: @unchecked Sendable {
     private let lock = NSLock()
     private var items: [RecoverySession] = []
     private var recoveredCount = 0
+    private var modes: [Bool] = []
+    var automaticFlags: [Bool] { lock.withLock { modes } }
     var failRetries = false
     var retryGate: DispatchSemaphore?
     var sessions: [RecoverySession] { lock.withLock { items } }
@@ -38,8 +41,8 @@ private final class RecoveryFactory: @unchecked Sendable {
     func recovered() { lock.withLock { recoveredCount += 1 } }
     func make(_ serial: String, _ recovering: Bool, _ callback: @escaping @Sendable (String) -> Void) -> any AoaMultiplexing {
         precondition(serial == "aoa:test-phone", "Recovery must use the selected USB location")
-        let result = RecoverySession(failStart: recovering && failRetries, gate: recovering ? retryGate : nil, disconnected: callback)
-        lock.withLock { items.append(result) }
+        let result = RecoverySession(failStart: items.count > 0 && failRetries, gate: recovering ? retryGate : nil, disconnected: callback)
+        lock.withLock { items.append(result); modes.append(recovering) }
         return result
     }
 }
@@ -94,6 +97,19 @@ func runAoaRecoveryChecks() async throws {
     try await Task.sleep(for: .milliseconds(50))
     precondition(bounded.sessions.count == 4 && bounded.recoveries == 0)
     try await failing.removeForward(serial: "aoa:test-phone", hostPort: 27183)
+
+    // Reopens that keep failing trigger one port reset; later attempts may re-enter accessory mode.
+    let stuck = RecoveryFactory(); stuck.failRetries = true
+    let resets = OSAllocatedUnfairLock(initialState: [String]())
+    let resetting = AoaDeviceLink(sessionFactory: stuck.make, retryDelays: Array(repeating: .milliseconds(1), count: 5),
+                                  resetPort: { serial in resets.withLock { $0.append(serial) } })
+    try await resetting.forward(serial: "aoa:test-phone", hostPort: 27183, devicePort: 27183)
+    stuck.sessions[0].fail()
+    try await awaitRecovery("retries around a port reset") { stuck.sessions.count == 6 }
+    precondition(resets.withLock { $0 } == ["aoa:test-phone"], "Exactly one reset for one recovery cycle")
+    precondition(stuck.automaticFlags == [false, true, true, false, false, false],
+                 "Only reopens after the reset may switch the phone back into accessory mode")
+    try await resetting.removeForward(serial: "aoa:test-phone", hostPort: 27183)
 
     let blocked = RecoveryFactory(); blocked.retryGate = DispatchSemaphore(value: 0)
     let stopping = AoaDeviceLink(sessionFactory: blocked.make, retryDelays: [.milliseconds(1)])

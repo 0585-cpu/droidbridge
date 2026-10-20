@@ -21,6 +21,7 @@ actor AoaDeviceLink: RelayDeviceTransport {
     private let libraryPath: String
     private let sessionFactory: SessionFactory
     private let retryDelays: [Duration]
+    private let resetPort: @Sendable (String) throws -> Void
     private let logger = Logger(subsystem: "io.droidbridge", category: "USBRecovery")
     private var mux: (any AoaMultiplexing)?
     private var sessionID: UUID?
@@ -52,10 +53,12 @@ actor AoaDeviceLink: RelayDeviceTransport {
                 return try ReliableUsbTransport(raw: LibusbAccessoryTransport(libraryPath: libraryPath, location: location))
             }, disconnected: disconnected)
         }
+        resetPort = { serial in try LibusbAccessoryTransport.reset(libraryPath: libraryPath, location: String(serial.dropFirst(4))) }
     }
 
-    init(sessionFactory: @escaping SessionFactory, retryDelays: [Duration]) {
-        libraryPath = ""; self.sessionFactory = sessionFactory; self.retryDelays = retryDelays
+    init(sessionFactory: @escaping SessionFactory, retryDelays: [Duration],
+         resetPort: @escaping @Sendable (String) throws -> Void = { _ in }) {
+        libraryPath = ""; self.sessionFactory = sessionFactory; self.retryDelays = retryDelays; self.resetPort = resetPort
     }
 
     func setRecoveryHandler(_ handler: @escaping @Sendable () async -> Void) { recovered = handler }
@@ -183,13 +186,25 @@ actor AoaDeviceLink: RelayDeviceTransport {
     }
 
     private func recover(serial: String, expected: UInt64) async {
+        var reset = false
         for (index, delay) in retryDelays.enumerated() {
             do {
                 try await Task.sleep(for: delay)
                 guard generation == expected, recoveryEnabled, selected == serial,
                       services.contains(.relay) else { return }
+                // Two failed reopens: the phone's USB controller may be stuck in suspend (seen after
+                // a charging change at full charge), which only a re-enumeration clears.
+                if index == 2 && !reset {
+                    reset = true
+                    logger.notice("USB reopen keeps failing; resetting the USB port")
+                    let resetPort = resetPort
+                    do { try await Task.detached { try resetPort(serial) }.value }
+                    catch { logger.error("USB port reset failed: \(error.localizedDescription, privacy: .public)") }
+                    guard generation == expected, recoveryEnabled else { return }
+                }
                 logger.notice("USB automatic reconnect attempt \(index + 1)")
-                try await open(serial: serial, automatic: true, expected: expected)
+                // After a reset the phone can return outside accessory mode; let open switch it back.
+                try await open(serial: serial, automatic: !reset, expected: expected)
                 guard generation == expected, recoveryEnabled else { return }
                 logger.notice("USB session restored; requesting authenticated relay health check")
                 recovery = nil

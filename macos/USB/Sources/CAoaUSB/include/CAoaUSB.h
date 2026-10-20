@@ -11,7 +11,8 @@ int db_usb_open(db_usb *usb, const char *location);
 void db_usb_close_device(db_usb *usb);
 int db_usb_control(db_usb *usb, int input, uint8_t request, uint16_t index, unsigned char *data, uint16_t size);
 int db_usb_claim(db_usb *usb);
+int db_usb_reset(db_usb *usb);
 int db_usb_out_packet_size(db_usb *usb);
 int db_usb_read(db_usb *usb, unsigned char *data, int size);
-int db_usb_write(db_usb *usb, unsigned char *data, int size);
+int db_usb_write(db_usb *usb, unsigned char *data, int size, int *sent);
 #endif

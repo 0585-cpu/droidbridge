@@ -8,7 +8,7 @@
 #define USB_APIS(X) \
  X(init) X(exit) X(get_device_list) X(free_device_list) X(get_device_descriptor) \
  X(get_bus_number) X(get_port_numbers) X(get_config_descriptor) X(free_config_descriptor) \
- X(open) X(close) X(get_device) X(control_transfer) X(claim_interface) X(release_interface) X(bulk_transfer)
+ X(open) X(close) X(get_device) X(control_transfer) X(claim_interface) X(release_interface) X(bulk_transfer) X(reset_device)
 
 struct db_usb {
     void *library;
@@ -113,6 +113,11 @@ int db_usb_control(db_usb *usb, int input, uint8_t request, uint16_t index, unsi
     if (!usb->handle) return LIBUSB_ERROR_NO_DEVICE;
     return usb->control_transfer(usb->handle, input ? 0xc0 : 0x40, request, 0, index, data, size, 1000);
 }
+/* A port reset makes the device re-enumerate, the software equivalent of replugging the cable. */
+int db_usb_reset(db_usb *usb) {
+    if (!usb->handle) return LIBUSB_ERROR_NO_DEVICE;
+    return usb->reset_device(usb->handle);
+}
 int db_usb_claim(db_usb *usb) {
     if (!usb->handle) return LIBUSB_ERROR_NO_DEVICE;
     libusb_device *device = usb->get_device(usb->handle);
@@ -157,11 +162,13 @@ int db_usb_read(db_usb *usb, unsigned char *data, int size) {
     return result;
 }
 int db_usb_out_packet_size(db_usb *usb) { return usb->output_packet_size; }
-int db_usb_write(db_usb *usb, unsigned char *data, int size) {
+/* Each transfer is bounded to 2.5 s. On a timeout *sent still reports what the phone accepted,
+ * so the caller can continue after those bytes instead of ending the session; they are never
+ * resent. Any other error invalidates the framing session. */
+int db_usb_write(db_usb *usb, unsigned char *data, int size, int *sent) {
     int transferred = 0;
-    // Allow a short accessory IO stall with a bounded per-transfer deadline.
-    // A frame can require multiple transfers. Never replay a timeout.
     int result = usb->bulk_transfer(usb->handle, usb->output, data, size, &transferred, 2500);
-    if (result != 0) return result; // any partial write error invalidates the framing session
+    *sent = (result == 0 || result == LIBUSB_ERROR_TIMEOUT) ? transferred : 0;
+    if (result != 0) return result;
     return transferred;
 }
