@@ -7,16 +7,19 @@ import java.security.MessageDigest
 /** Integrity envelope, not authentication. DBP and application TLS remain inside the byte stream. */
 data class ReliableUsbRecord(val kind: Int, val epoch: ByteArray, val sequence: Long = 0,
                              val ack: Long = 0, val payload: ByteArray = ByteArray(0)) {
-    fun encode(): ByteArray {
+    fun encode(): ByteArray = ByteArray(80 + payload.size).also { encodeInto(it) }
+
+    /** The writer reuses one buffer: a fresh 16 KiB array per record was large-object GC churn. */
+    fun encodeInto(target: ByteArray): Int {
         if (!valid(kind, payload.size, sequence, ack) || epoch.size != 16) throw IOException("invalid reliable USB record")
-        val encoded = ByteArray(80 + payload.size)
-        ByteBuffer.wrap(encoded).put(MAGIC).putInt(kind shl 24).putInt(payload.size)
+        if (target.size < 80 + payload.size) throw IOException("reliable USB encode buffer too small")
+        ByteBuffer.wrap(target).put(MAGIC).putInt(kind shl 24).putInt(payload.size)
             .put(epoch).putLong(sequence).putLong(ack)
         val hash = hashes.get()!!
-        hash.into(payload, 0, payload.size, encoded, 48)
-        hash.into(encoded, 0, 64, encoded, 64)
-        payload.copyInto(encoded, 80)
-        return encoded
+        hash.into(payload, 0, payload.size, target, 48)
+        hash.into(target, 0, 64, target, 64)
+        payload.copyInto(target, 80)
+        return 80 + payload.size
     }
     companion object {
         val MAGIC = "DBR3LINK".toByteArray(Charsets.US_ASCII)

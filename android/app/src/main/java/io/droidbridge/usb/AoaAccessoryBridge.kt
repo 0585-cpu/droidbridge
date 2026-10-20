@@ -375,7 +375,7 @@ class AoaAccessoryBridge(
             stream.sentBytes += count
             stream.lastSent = System.nanoTime()
             stream.idleReported = false
-            send(AoaFrame(AoaFrame.DATA, stream.id, payload = buffer.array().copyOf(count)))
+            sendEncoded(AoaFrame.encodeData(stream.id, buffer.array(), 0, count)) // one copy, not two
         }
         interests(stream)
     }
@@ -463,8 +463,10 @@ class AoaAccessoryBridge(
         if (notify) send(AoaFrame(AoaFrame.CLOSE, id))
     }
 
-    private fun send(frame: AoaFrame) {
-        if (!stopped.get() && !outgoing.offer(frame.encode())) throw IOException("USB writer queue exceeded")
+    private fun send(frame: AoaFrame) = sendEncoded(frame.encode())
+
+    private fun sendEncoded(bytes: ByteArray) {
+        if (!stopped.get() && !outgoing.offer(bytes)) throw IOException("USB writer queue exceeded")
     }
 
     override fun close() = stop("USB disconnected")

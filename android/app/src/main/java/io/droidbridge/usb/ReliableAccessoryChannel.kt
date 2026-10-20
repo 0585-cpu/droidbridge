@@ -119,6 +119,7 @@ class ReliableAccessoryChannel(
         Thread({
             var reportedRetries = 0L
             var lastReport = 0L
+            val encoded = ByteArray(80 + ReliableUsbRecord.MAX_PAYLOAD)
             try {
                 while (true) {
                     val record = synchronized(monitor) {
@@ -137,17 +138,17 @@ class ReliableAccessoryChannel(
                         runCatching { onRetransmission(retries) }
                     }
                     if (record != null) {
-                        val bytes = record.encode()
+                        val size = record.encodeInto(encoded)
                         synchronized(monitor) {
                             failure?.let { throw it }
                             writeStarted = now()
                             armDeadlineLocked()
                         }
                         var pos = 0
-                        while (pos < bytes.size) {
+                        while (pos < size) {
                             // Keep each descriptor write within the accessory's 16 KiB limit.
-                            val count = minOf(16384, bytes.size-pos)
-                            rawOutput.write(bytes,pos,count); pos += count
+                            val count = minOf(16384, size-pos)
+                            rawOutput.write(encoded,pos,count); pos += count
                         }
                         synchronized(monitor) { writeStarted = null }
                     }
